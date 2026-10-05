@@ -1,0 +1,109 @@
+# Infrastructure starts by default:   docker compose up -d
+# App containers are behind a profile: docker compose --profile app up -d --build
+#
+# Kafka exposes two listeners:
+#   INTERNAL kafka:19092    -> for containers on the compose network
+#   EXTERNAL localhost:9092 -> for processes running on the host (hybrid dev)
+# A client connects to any bootstrap address, then gets the *advertised*
+# address back and reconnects to it — so each side must be given the one it
+# can actually resolve.
+
+name: fileflow
+
+x-app-env: &app-env
+  FILEFLOW_DATABASE_URL: postgresql+asyncpg://fileflow:fileflow@postgres:5432/fileflow
+  FILEFLOW_S3_ENDPOINT_URL: http://minio:9000
+  FILEFLOW_S3_ACCESS_KEY: fileflow
+  FILEFLOW_S3_SECRET_KEY: fileflow-secret
+  FILEFLOW_S3_BUCKET: fileflow
+  FILEFLOW_KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: fileflow
+      POSTGRES_PASSWORD: fileflow
+      POSTGRES_DB: fileflow
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fileflow -d fileflow"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Official MinIO images are no longer published on public registries.
+  # bitnamilegacy/* repackages the same MinIO release; frozen (no security
+  # updates) — fine for a local lab. App code speaks plain S3, so any
+  # S3-compatible server (RustFS, SeaweedFS, ...) is a drop-in replacement.
+  minio:
+    image: bitnamilegacy/minio:2024.10.13
+    environment:
+      MINIO_ROOT_USER: fileflow
+      MINIO_ROOT_PASSWORD: fileflow-secret
+      MINIO_CONSOLE_PORT_NUMBER: "9001"
+    ports: ["9000:9000", "9001:9001"]
+    volumes: [miniodata:/bitnami/minio/data]
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-shot job: create the bucket, then exit. Bucket provisioning is an
+  # infrastructure concern, not something the app does on every start.
+  minio-init:
+    image: bitnamilegacy/minio-client:2024.10.8
+    depends_on:
+      minio: { condition: service_healthy }
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 fileflow fileflow-secret &&
+      mc mb --ignore-existing local/fileflow
+      "
+    restart: "no"
+
+  kafka:
+    image: apache/kafka:3.8.0
+    environment:
+      # Single node acting as both broker and KRaft controller (no ZooKeeper).
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENERS: INTERNAL://:19092,EXTERNAL://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:19092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      # One broker -> replication factor 1 for internal topics.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Topics are created explicitly (Phase 05), never by accident on first use.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    ports: ["9092:9092"]
+    volumes: [kafkadata:/var/lib/kafka/data]
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 15s
+
+  api:
+    profiles: [app]
+    build: .
+    command: uvicorn app.api.main:app --host 0.0.0.0 --port 8000
+    environment: *app-env
+    ports: ["8000:8000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      minio-init: { condition: service_completed_successfully }
+      kafka: { condition: service_healthy }
+
+volumes:
+  pgdata:
+  miniodata:
+  kafkadata:
