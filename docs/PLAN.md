@@ -34,7 +34,7 @@ Docker Compose. Optional: JSON logs, Prometheus, Grafana (only if it adds value)
 | #  | Step | Key content | Learn |
 |----|------|-------------|-------|
 | 01 | Foundation | layout, env config, compose (PG, MinIO, Kafka), `GET /health`, `GET /` | project structure, DI, lifespan, async DB, Docker networking |
-| 02 | Upload + MinIO | `POST /files`, `GET /files/{id}`; metadata (id, filename, content_type, size, storage_key, checksum, created_at, status UPLOADING→UPLOADED); blobs never in PG | object storage, metadata/blob split, streaming uploads, storage abstraction |
+| 02 | Upload + MinIO | `POST /files`, `GET /files/{id}`; metadata (id, filename, content_type, size, storage_key, checksum, created_at, status UPLOADING→UPLOADED, or FAILED when storage rejects the upload); blobs never in PG | object storage, metadata/blob split, streaming uploads, storage abstraction |
 | 03 | Task state machine | File + Task; PENDING→PROCESSING→COMPLETED/FAILED | domain model, state machine, service/repo split, tx boundaries |
 | 04 | Basic worker | no Kafka yet; SHA-256, lines, words, size, processing time | background processing |
 | 05 | Kafka | topic `file-processing`, msg `{event_id, task_id, file_id, attempt}`; producer, consumer group, offsets, graceful stop; 1→4 partitions/workers | consumer groups, partitioning, ordering, offsets, at-least-once, consumer death |

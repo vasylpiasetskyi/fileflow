@@ -19,6 +19,7 @@ COPY app ./app
 COPY templates ./templates
 COPY static ./static
 COPY migrations ./migrations
+COPY alembic.ini ./
 RUN uv sync --frozen --no-dev
 
 # Run as non-root.

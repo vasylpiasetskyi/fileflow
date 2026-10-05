@@ -8,6 +8,7 @@ the app containers override these with service names (`postgres`, `minio`, `kafk
 
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,6 +25,13 @@ class Settings(BaseSettings):
     s3_secret_key: str = "fileflow-secret"
     s3_bucket: str = "fileflow"
     s3_region: str = "us-east-1"
+    # S3 multipart upload part size. S3 requires >= 5 MiB for every part except
+    # the last one. This is also the per-upload memory bound: one part is
+    # buffered at a time.
+    s3_part_size_bytes: int = Field(default=8 * 1024 * 1024, ge=5 * 1024 * 1024)
+
+    # How much we read from the incoming upload per iteration.
+    upload_read_chunk_bytes: int = 1024 * 1024
 
     # Kafka
     kafka_bootstrap_servers: str = "localhost:9092"

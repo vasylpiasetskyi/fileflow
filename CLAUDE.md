@@ -43,6 +43,8 @@ tied to the current phase.
 
 ```bash
 docker compose up -d --wait               # infra: postgres, minio, kafka
+uv run alembic upgrade head               # apply migrations
+uv run alembic revision --autogenerate -m "..."  # then REVIEW the file
 uv run uvicorn app.api.main:app --reload  # api on the host (hybrid dev)
 docker compose --profile app up -d --build  # everything in containers
 uv run pytest                             # unit tests

@@ -92,6 +92,17 @@ services:
       retries: 10
       start_period: 15s
 
+  # One-shot: apply DB migrations, then exit. App processes start only after
+  # it succeeds, so no process ever runs against an outdated schema.
+  migrate:
+    profiles: [app]
+    build: .
+    command: alembic upgrade head
+    environment: *app-env
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
   api:
     profiles: [app]
     build: .
@@ -99,7 +110,7 @@ services:
     environment: *app-env
     ports: ["8000:8000"]
     depends_on:
-      postgres: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
       minio-init: { condition: service_completed_successfully }
       kafka: { condition: service_healthy }
 
