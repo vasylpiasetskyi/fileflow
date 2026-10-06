@@ -114,6 +114,17 @@ services:
       minio-init: { condition: service_completed_successfully }
       kafka: { condition: service_healthy }
 
+  # Scale with: docker compose --profile app up -d --scale worker=3
+  worker:
+    profiles: [app]
+    build: .
+    command: python -m app.worker
+    environment: *app-env
+    stop_grace_period: 30s  # time to finish the current task after SIGTERM
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      minio-init: { condition: service_completed_successfully }
+
   # DB web UI, opt-in: docker compose --profile tools up -d adminer
   # http://localhost:8080  System: PostgreSQL, Server: postgres (prefilled),
   # Username / Password / Database: fileflow / fileflow / fileflow

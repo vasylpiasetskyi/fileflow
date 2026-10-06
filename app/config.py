@@ -6,6 +6,8 @@ Python processes on the host, so every host is `localhost`. Inside compose
 the app containers override these with service names (`postgres`, `minio`, `kafka`).
 """
 
+import os
+import socket
 from functools import lru_cache
 
 from pydantic import Field
@@ -35,6 +37,14 @@ class Settings(BaseSettings):
 
     # Kafka
     kafka_bootstrap_servers: str = "localhost:9092"
+
+    # Worker
+    # Identifies which process claimed a task. hostname = container id under compose.
+    worker_id: str = Field(default_factory=lambda: f"{socket.gethostname()}-{os.getpid()}")
+    # How long an idle worker waits before polling for PENDING tasks again.
+    worker_poll_interval_s: float = 1.0
+    # How much of an object the worker reads from storage per iteration.
+    processing_read_chunk_bytes: int = 1024 * 1024
 
     # Health checks: how long a single dependency probe may take
     health_check_timeout_s: float = 2.0

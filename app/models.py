@@ -94,9 +94,30 @@ class Task(Base):
     # Incremented on every PENDING -> PROCESSING; retries (Phase 08) build on it.
     attempt: Mapped[int] = mapped_column(Integer, server_default="0")
     error: Mapped[str | None] = mapped_column(Text)
+    # The worker that claimed the task most recently.
+    worker_id: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class TaskResult(Base):
+    """Output of a completed task.
+
+    task_id is the primary key: at most one result per task, enforced by
+    PostgreSQL. Written in the same transaction as PROCESSING -> COMPLETED.
+    """
+
+    __tablename__ = "task_results"
+    __mapper_args__ = {"eager_defaults": True}
+
+    task_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tasks.id"), primary_key=True)
+    sha256: Mapped[str] = mapped_column(String(64))
+    size: Mapped[int] = mapped_column(BigInteger)
+    line_count: Mapped[int] = mapped_column(BigInteger)
+    word_count: Mapped[int] = mapped_column(BigInteger)
+    processing_ms: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -46,9 +46,10 @@ docker compose up -d --wait               # infra: postgres, minio, kafka
 uv run alembic upgrade head               # apply migrations
 uv run alembic revision --autogenerate -m "..."  # then REVIEW the file
 uv run uvicorn app.api.main:app --reload  # api on the host (hybrid dev)
+uv run python -m app.worker               # worker on the host
 docker compose --profile app up -d --build  # everything in containers
 uv run pytest                             # unit tests
-uv run pytest -m integration              # needs running infra
+uv run pytest -m integration              # needs running infra; uses DB fileflow_test
 uv run ruff check . && uv run ruff format .
 uv run python -m experiments.<name>       # phase experiments (experiments/)
 ```

@@ -8,6 +8,7 @@ import contextlib
 from collections.abc import AsyncIterable, AsyncIterator
 from contextlib import AsyncExitStack
 
+import aiohttp
 from aiobotocore.config import AioConfig
 from aiobotocore.session import get_session
 from botocore.exceptions import BotoCoreError, ClientError
@@ -17,6 +18,10 @@ from app.config import Settings
 
 class StorageError(Exception):
     """The object store failed or is unreachable."""
+
+
+class ObjectNotFoundError(StorageError):
+    """The requested object does not exist."""
 
 
 async def rechunk(chunks: AsyncIterable[bytes], size: int) -> AsyncIterator[bytes]:
@@ -115,6 +120,29 @@ class Storage:
             if isinstance(exc, BotoCoreError | ClientError):
                 raise StorageError(f"upload of {key} failed: {exc}") from exc
             raise
+
+    async def download_stream(self, key: str, chunk_size: int) -> AsyncIterator[bytes]:
+        """Yield an object's bytes in chunks of up to `chunk_size`.
+
+        The HTTP response body is read incrementally; the full object is never
+        held in memory.
+        """
+        try:
+            resp = await self._client.get_object(Bucket=self.bucket, Key=key)
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") == "NoSuchKey":
+                raise ObjectNotFoundError(key) from exc
+            raise StorageError(f"cannot read {key}: {exc}") from exc
+        except BotoCoreError as exc:
+            raise StorageError(f"cannot read {key}: {exc}") from exc
+
+        async with resp["Body"] as body:
+            try:
+                async for chunk in body.iter_chunks(chunk_size):
+                    yield chunk
+            except (BotoCoreError, aiohttp.ClientError, TimeoutError) as exc:
+                # The connection can also break mid-stream, after the 200 OK.
+                raise StorageError(f"reading {key} failed midway: {exc}") from exc
 
     async def _upload_part(self, key: str, upload_id: str, number: int, body: bytes) -> dict:
         resp = await self._client.upload_part(

@@ -19,18 +19,38 @@ class TaskOut(BaseModel):
     file_id: uuid.UUID
     status: TaskStatus
     attempt: int
+    worker_id: str | None
     error: str | None
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
 
 
-@router.get("/{task_id}", response_model=TaskOut)
+class TaskResultOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    sha256: str
+    size: int
+    line_count: int
+    word_count: int
+    processing_ms: int
+
+
+class TaskDetailOut(TaskOut):
+    result: TaskResultOut | None
+
+
+@router.get("/{task_id}", response_model=TaskDetailOut)
 async def get_task(
     task_id: uuid.UUID,
     service: Annotated[TaskService, Depends(get_task_service)],
-) -> TaskOut:
+) -> TaskDetailOut:
     try:
-        return TaskOut.model_validate(await service.get(task_id))
+        task = await service.get(task_id)
     except UnknownTaskError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "task not found") from exc
+    result = await service.get_result(task_id)
+    return TaskDetailOut(
+        **TaskOut.model_validate(task).model_dump(),
+        result=TaskResultOut.model_validate(result) if result else None,
+    )

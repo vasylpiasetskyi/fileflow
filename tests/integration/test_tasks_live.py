@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from sqlalchemy import select
 
 from app.models import File, FileStatus, Task, TaskStatus
+from app.processing import FileStats
 from app.repositories.task_repository import TaskRepository
 from app.services.task_service import (
     TaskService,
@@ -14,6 +15,9 @@ from app.services.task_service import (
 )
 
 pytestmark = pytest.mark.integration
+
+WORKER = "test-worker"
+STATS = FileStats(size=13, sha256="0" * 64, line_count=1, word_count=2)
 
 
 async def _upload(client, name: str = "doc.txt") -> dict:
@@ -43,7 +47,7 @@ async def test_get_task_returns_its_state(client):
     resp = await client.get(f"/tasks/{created['id']}")
 
     assert resp.status_code == 200
-    assert resp.json() == created
+    assert resp.json() == {**created, "result": None}
 
 
 async def test_get_unknown_task_returns_404(client):
@@ -53,19 +57,22 @@ async def test_get_unknown_task_returns_404(client):
 async def test_happy_path_pending_processing_completed(client, tasks):
     task_id = uuid.UUID((await _upload(client))["task"]["id"])
 
-    started = await tasks.start(task_id)
+    started = await tasks.start(task_id, WORKER)
     assert started.status == TaskStatus.PROCESSING
     assert started.attempt == 1
+    assert started.worker_id == WORKER
     assert started.started_at is not None
 
-    completed = await tasks.complete(task_id)
+    completed = await tasks.complete(task_id, STATS, processing_ms=5)
     assert completed.status == TaskStatus.COMPLETED
     assert completed.finished_at is not None
+    result = await tasks.get_result(task_id)
+    assert (result.size, result.line_count, result.word_count) == (13, 1, 2)
 
 
 async def test_fail_records_the_error(client, tasks):
     task_id = uuid.UUID((await _upload(client))["task"]["id"])
-    await tasks.start(task_id)
+    await tasks.start(task_id, WORKER)
 
     failed = await tasks.fail(task_id, "unsupported format")
 
@@ -77,25 +84,27 @@ async def test_illegal_transition_is_rejected_and_state_is_unchanged(client, tas
     task_id = uuid.UUID((await _upload(client))["task"]["id"])
 
     with pytest.raises(TaskTransitionConflictError) as exc_info:
-        await tasks.complete(task_id)  # PENDING -> COMPLETED skips PROCESSING
+        # PENDING -> COMPLETED skips PROCESSING
+        await tasks.complete(task_id, STATS, processing_ms=5)
 
     assert exc_info.value.current == TaskStatus.PENDING
     assert (await tasks.get(task_id)).status == TaskStatus.PENDING
+    assert await tasks.get_result(task_id) is None  # result rolled back with the transition
 
 
 async def test_terminal_task_cannot_be_restarted(client, tasks):
     task_id = uuid.UUID((await _upload(client))["task"]["id"])
-    await tasks.start(task_id)
-    await tasks.complete(task_id)
+    await tasks.start(task_id, WORKER)
+    await tasks.complete(task_id, STATS, processing_ms=5)
 
     with pytest.raises(TaskTransitionConflictError):
-        await tasks.start(task_id)
+        await tasks.start(task_id, WORKER)
     assert (await tasks.get(task_id)).attempt == 1
 
 
 async def test_transition_of_unknown_task_raises(tasks):
     with pytest.raises(UnknownTaskError):
-        await tasks.start(uuid.uuid4())
+        await tasks.start(uuid.uuid4(), WORKER)
 
 
 async def test_concurrent_starts_exactly_one_wins(client, tasks):
@@ -103,7 +112,7 @@ async def test_concurrent_starts_exactly_one_wins(client, tasks):
 
     # 10 claims on separate connections at the same time.
     results = await asyncio.gather(
-        *(tasks.start(task_id) for _ in range(10)), return_exceptions=True
+        *(tasks.start(task_id, WORKER) for _ in range(10)), return_exceptions=True
     )
 
     winners = [r for r in results if isinstance(r, Task)]
