@@ -37,12 +37,23 @@ class Settings(BaseSettings):
 
     # Kafka
     kafka_bootstrap_servers: str = "localhost:9092"
+    kafka_topic: str = "file-processing"
+    # All workers share one consumer group: Kafka splits the topic's
+    # partitions between them, each partition goes to exactly one member.
+    kafka_consumer_group: str = "fileflow-workers"
+    # Per-request timeout of the Kafka client (metadata, produce requests).
+    kafka_request_timeout_ms: int = 5000
+    # Upper bound for one publish() call. Needed because an idempotent producer
+    # retries a failing send indefinitely: without it, an upload request hangs
+    # for as long as Kafka is down.
+    kafka_publish_timeout_s: float = 10.0
 
     # Worker
     # Identifies which process claimed a task. hostname = container id under compose.
     worker_id: str = Field(default_factory=lambda: f"{socket.gethostname()}-{os.getpid()}")
-    # How long an idle worker waits before polling for PENDING tasks again.
-    worker_poll_interval_s: float = 1.0
+    # Pause before re-reading a message whose handling hit an infrastructure
+    # error (e.g. PostgreSQL down). Proper retries with backoff: Phase 08.
+    worker_redelivery_delay_s: float = 2.0
     # How much of an object the worker reads from storage per iteration.
     processing_read_chunk_bytes: int = 1024 * 1024
 

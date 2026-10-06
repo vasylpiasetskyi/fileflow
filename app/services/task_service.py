@@ -30,16 +30,6 @@ class TaskTransitionConflictError(RuntimeError):
         self.current = current
 
 
-def _start_values(worker_id: str) -> dict[str, object]:
-    """Column values for entering PROCESSING, shared by start() and claim_next()."""
-    return {
-        "attempt": Task.attempt + 1,  # SQL expression, evaluated by PostgreSQL
-        "worker_id": worker_id,
-        "started_at": func.now(),
-        "finished_at": None,
-    }
-
-
 class TaskService:
     def __init__(self, sessionmaker: async_sessionmaker[AsyncSession]) -> None:
         self._sessionmaker = sessionmaker
@@ -55,14 +45,16 @@ class TaskService:
         async with self._sessionmaker() as session:
             return await TaskRepository(session).get_result(task_id)
 
-    async def claim_next(self, worker_id: str) -> Task | None:
-        """Claim the oldest PENDING task, if any (polling worker)."""
-        async with self._sessionmaker.begin() as session:
-            return await TaskRepository(session).claim_next(**_start_values(worker_id))
-
     async def start(self, task_id: uuid.UUID, worker_id: str) -> Task:
-        """Claim a specific task: PENDING -> PROCESSING (consumer that is told the task id)."""
-        return await self._transition(task_id, TaskStatus.PROCESSING, **_start_values(worker_id))
+        """Claim a task for processing: PENDING -> PROCESSING, attempt + 1."""
+        return await self._transition(
+            task_id,
+            TaskStatus.PROCESSING,
+            attempt=Task.attempt + 1,  # SQL expression, evaluated by PostgreSQL
+            worker_id=worker_id,
+            started_at=func.now(),
+            finished_at=None,
+        )
 
     async def complete(self, task_id: uuid.UUID, stats: FileStats, processing_ms: int) -> Task:
         """PROCESSING -> COMPLETED and store the result, in one transaction."""

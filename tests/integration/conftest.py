@@ -2,12 +2,14 @@
 
 Integration tests use their own database, `<dev db>_test`, emptied before
 every test: a worker claims *any* PENDING task, so tests cannot share tables
-with dev data or with each other. The bucket is shared; object keys are
-unique per file, so that is harmless.
+with dev data or with each other. Each test also gets a fresh Kafka topic and
+consumer group, so no test sees another test's messages or offsets. The bucket
+is shared; object keys are unique per file, so that is harmless.
 """
 
 import asyncio
 import os
+import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -15,6 +17,7 @@ import asyncpg
 import httpx
 import pytest
 from aiobotocore.session import get_session
+from aiokafka.admin import AIOKafkaAdminClient, NewTopic
 from alembic import command
 from alembic.config import Config
 from fastapi import FastAPI
@@ -71,8 +74,27 @@ async def clean_tables(migrated_database) -> None:
     await engine.dispose()
 
 
+@pytest.fixture(autouse=True)
+async def kafka_topic(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[str]:
+    """A fresh single-partition topic + consumer group for this test only."""
+    topic = f"file-processing-test-{uuid.uuid4().hex[:8]}"
+    monkeypatch.setenv("FILEFLOW_KAFKA_TOPIC", topic)
+    monkeypatch.setenv("FILEFLOW_KAFKA_CONSUMER_GROUP", f"{topic}-workers")
+    get_settings.cache_clear()
+
+    admin = AIOKafkaAdminClient(bootstrap_servers=get_settings().kafka_bootstrap_servers)
+    await admin.start()
+    try:
+        await admin.create_topics([NewTopic(topic, num_partitions=1, replication_factor=1)])
+        yield topic
+        await admin.delete_topics([topic])
+    finally:
+        await admin.close()
+        get_settings.cache_clear()
+
+
 @pytest.fixture
-async def app() -> AsyncIterator[FastAPI]:
+async def app(kafka_topic: str) -> AsyncIterator[FastAPI]:
     app = create_app()
     # httpx.ASGITransport does not run the lifespan; run it explicitly so the
     # app gets real connection pools, exactly as under uvicorn.

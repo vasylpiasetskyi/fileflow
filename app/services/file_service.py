@@ -7,10 +7,17 @@ what keeps failures visible:
          stream bytes -> S3 (multipart)
     tx2: UPLOADING -> UPLOADED + size/checksum
          INSERT tasks (PENDING)            -- same transaction: never one without the other
+         publish TaskQueuedEvent -> Kafka  -- AFTER commit: a dual write (see below)
 
 - S3 fails            -> row marked FAILED, no object (upload aborted).
 - process dies midway -> row stays UPLOADING: an orphan you can find with SQL.
 The reverse order (S3 first) would leave orphan objects nobody knows about.
+
+Known flaw, kept on purpose until Phase 06: tx2 and the Kafka publish are two
+independent writes. If Kafka is unavailable after tx2 committed, the task is
+PENDING in the database but no event exists, so no worker will ever pick it
+up. Publishing *before* the commit is no better: the event could then refer to
+a task that is rolled back. The transactional outbox fixes this.
 """
 
 import hashlib
@@ -20,6 +27,8 @@ from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.events import TaskQueuedEvent
+from app.kafka import EventPublisher
 from app.models import File, FileStatus, Task, TaskStatus
 from app.repositories.file_repository import FileRepository
 from app.repositories.task_repository import TaskRepository
@@ -59,9 +68,15 @@ class StreamDigest:
 
 
 class FileService:
-    def __init__(self, sessionmaker: async_sessionmaker[AsyncSession], storage: Storage) -> None:
+    def __init__(
+        self,
+        sessionmaker: async_sessionmaker[AsyncSession],
+        storage: Storage,
+        publisher: EventPublisher,
+    ) -> None:
         self._sessionmaker = sessionmaker
         self._storage = storage
+        self._publisher = publisher
 
     async def upload(
         self, filename: str, content_type: str, chunks: AsyncIterable[bytes]
@@ -101,6 +116,9 @@ class FileService:
             )
             task = Task(id=uuid.uuid4(), file_id=file_id, status=TaskStatus.PENDING, attempt=0)
             TaskRepository(session).add(task)
+
+        # The dual write: committed above, published here. Raises PublishError.
+        await self._publisher.publish(TaskQueuedEvent(task_id=task.id, file_id=file_id))
         return UploadResult(file=file, task=task)
 
     async def get(self, file_id: uuid.UUID) -> File:

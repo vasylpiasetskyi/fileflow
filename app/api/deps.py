@@ -36,7 +36,9 @@ def get_storage(request: Request) -> Storage:
 
 def get_file_service(request: Request) -> FileService:
     # Cheap to construct: it only holds references to process-wide resources.
-    return FileService(request.app.state.sessionmaker, get_storage(request))
+    return FileService(
+        request.app.state.sessionmaker, get_storage(request), request.app.state.publisher
+    )
 
 
 def get_task_service(request: Request) -> TaskService:

@@ -23,7 +23,8 @@ Source of truth: `docs/PLAN.md` (phases, failure lab, testing strategy).
 One codebase, one Docker image, several processes (selected by `command`):
 
 - `api` — FastAPI: REST + Jinja2/HTMX UI (`app/api/`)
-- `worker`, `outbox-publisher`, `recovery` — separate processes (later phases)
+- `worker` — Kafka consumer (`app/worker/`), group `fileflow-workers`
+- `outbox-publisher`, `recovery` — separate processes (later phases)
 
 Infra: PostgreSQL (metadata, task state, outbox), MinIO/S3 (blobs only — file
 contents never go into PostgreSQL), Kafka (KRaft, single broker).

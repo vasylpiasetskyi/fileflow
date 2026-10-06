@@ -1,4 +1,4 @@
-"""Processing use case: take a task, analyze its file, record the outcome."""
+"""Processing use case: claim the task named by an event, analyze its file, record the outcome."""
 
 import logging
 import time
@@ -8,9 +8,11 @@ from contextlib import aclosing
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings
+from app.events import TaskQueuedEvent
 from app.models import Task
 from app.processing import analyze
-from app.services.file_service import FileService
+from app.repositories.file_repository import FileRepository
+from app.services.file_service import UnknownFileError
 from app.services.task_service import TaskService
 from app.storage import Storage
 
@@ -28,23 +30,30 @@ class ProcessingService:
         storage: Storage,
         settings: Settings,
     ) -> None:
+        self._sessionmaker = sessionmaker
         self._tasks = TaskService(sessionmaker)
-        self._files = FileService(sessionmaker, storage)
         self._storage = storage
         self._settings = settings
 
-    async def process_next(self) -> Task | None:
-        """Claim and process one task. Returns None when there was nothing to do."""
-        task = await self._tasks.claim_next(self._settings.worker_id)
-        if task is None:
-            return None
+    async def process(self, event: TaskQueuedEvent) -> Task:
+        """Claim the event's task and process it.
+
+        Raises TaskTransitionConflictError if the task is no longer PENDING
+        (e.g. the same event delivered twice) and UnknownTaskError if it does
+        not exist; the caller decides what that means for the message.
+        """
+        task = await self._tasks.start(event.task_id, self._settings.worker_id)
+        # The database, not the message, is the source of truth for the file.
         return await self._process(task.id, task.file_id)
 
     async def _process(self, task_id: uuid.UUID, file_id: uuid.UUID) -> Task:
         log.info("task %s: processing file %s", task_id, file_id)
         started = time.perf_counter()
         try:
-            file = await self._files.get(file_id)
+            async with self._sessionmaker() as session:
+                file = await FileRepository(session).get(file_id)
+            if file is None:
+                raise UnknownFileError(file_id)
             chunks = self._storage.download_stream(
                 file.storage_key, self._settings.processing_read_chunk_bytes
             )

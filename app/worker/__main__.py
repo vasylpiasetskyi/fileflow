@@ -1,10 +1,17 @@
-"""Worker process: polls PostgreSQL for PENDING tasks and processes them.
+"""Worker process: a Kafka consumer that processes TaskQueuedEvents.
 
     uv run python -m app.worker
 
-Stops on SIGTERM/SIGINT *between* tasks: the task in progress is finished
-first. (Phase 12 refines shutdown; until leases exist, a hard kill leaves the
-current task stuck in PROCESSING.)
+Delivery semantics: at-least-once. Auto-commit is off; the offset of a message
+is committed only after its outcome is stored in PostgreSQL. A crash between
+the two means the message is delivered again after restart/rebalance.
+
+Per message, one of three outcomes:
+- processed (COMPLETED or FAILED stored)       -> commit
+- nothing to do (bad message, task not PENDING) -> commit, i.e. skip
+- infrastructure error (e.g. DB down)           -> no commit, seek back, retry later
+
+Stops on SIGTERM/SIGINT *between* messages (Phase 12 refines shutdown).
 """
 
 import asyncio
@@ -12,48 +19,109 @@ import contextlib
 import logging
 import signal
 
+from aiokafka import AIOKafkaConsumer, ConsumerRecord, TopicPartition
+from pydantic import ValidationError
+
 from app.config import Settings, get_settings
 from app.db import create_engine, create_sessionmaker
+from app.events import TaskQueuedEvent
+from app.kafka import require_topic
 from app.services.processing_service import ProcessingService
+from app.services.task_service import TaskTransitionConflictError, UnknownTaskError
 from app.storage import Storage
 
 log = logging.getLogger("app.worker")
 
 
-async def run(settings: Settings) -> None:
+def create_consumer(settings: Settings) -> AIOKafkaConsumer:
+    return AIOKafkaConsumer(
+        settings.kafka_topic,
+        bootstrap_servers=settings.kafka_bootstrap_servers,
+        group_id=settings.kafka_consumer_group,
+        client_id=settings.worker_id,
+        # We commit explicitly after processing; auto-commit would commit on a
+        # timer, possibly before the work is done (-> lost messages on crash).
+        enable_auto_commit=False,
+        # A group with no committed offset yet starts from the oldest message,
+        # so events published before the first worker started are not lost.
+        auto_offset_reset="earliest",
+    )
+
+
+async def handle(
+    consumer: AIOKafkaConsumer,
+    service: ProcessingService,
+    msg: ConsumerRecord,
+    settings: Settings,
+    stop: asyncio.Event,
+) -> None:
+    tp = TopicPartition(msg.topic, msg.partition)
+    where = f"{msg.topic}[{msg.partition}]@{msg.offset}"
+
+    try:
+        event = TaskQueuedEvent.model_validate_json(msg.value)
+    except ValidationError as exc:
+        # A poison message: retrying cannot fix it. Skip (DLQ: Phase 09).
+        log.error("%s: invalid message, skipping: %s", where, exc.errors()[0]["msg"])
+    else:
+        try:
+            task = await service.process(event)
+            log.info("%s: task %s -> %s", where, task.id, task.status)
+        except (TaskTransitionConflictError, UnknownTaskError) as exc:
+            # The task is not ours to process (already handled, or unknown).
+            log.warning("%s: skipping event %s: %s", where, event.event_id, exc)
+        except Exception:
+            # Infrastructure failure: the outcome was NOT stored. Do not commit;
+            # rewind to this message so it is fetched again after a pause.
+            log.exception("%s: handling failed, will redeliver", where)
+            consumer.seek(tp, msg.offset)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(stop.wait(), settings.worker_redelivery_delay_s)
+            return
+
+    # The committed offset is the *next* message to read, hence + 1.
+    await consumer.commit({tp: msg.offset + 1})
+
+
+async def run(settings: Settings, stop: asyncio.Event) -> None:
     engine = create_engine(settings)
     storage = Storage(settings)
     await storage.start()
     service = ProcessingService(create_sessionmaker(engine), storage, settings)
-
-    stop = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, stop.set)
-
-    log.info("worker %s started", settings.worker_id)
+    consumer = create_consumer(settings)
     try:
+        # Raises if Kafka is unreachable or the topic is missing — the process
+        # exits and its supervisor (compose `restart:`, Kubernetes) starts it again.
+        await require_topic(settings)
+        await consumer.start()  # joins the consumer group; partitions get assigned
+        log.info("worker %s consuming %s", settings.worker_id, settings.kafka_topic)
         while not stop.is_set():
-            try:
-                task = await service.process_next()
-            except Exception:
-                # e.g. PostgreSQL down while claiming or recording a result.
-                # Keep the process alive and try again after the poll interval.
-                log.exception("worker iteration failed")
-                task = None
-            if task is None:
-                # Idle: sleep for the poll interval, but wake up at once on stop.
-                with contextlib.suppress(TimeoutError):
-                    await asyncio.wait_for(stop.wait(), settings.worker_poll_interval_s)
+            # Short timeout so a stop request is noticed within a second even
+            # when the topic is idle; one record at a time keeps offsets simple.
+            batch = await consumer.getmany(timeout_ms=1000, max_records=1)
+            for messages in batch.values():
+                for msg in messages:
+                    await handle(consumer, service, msg, settings, stop)
     finally:
         log.info("worker %s stopping", settings.worker_id)
+        # stop() sends LeaveGroup: partitions are reassigned immediately instead
+        # of after the session timeout (which is what a kill -9 costs).
+        await consumer.stop()
         await storage.close()
         await engine.dispose()
 
 
+async def main_async() -> None:
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, stop.set)
+    await run(get_settings(), stop)
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    asyncio.run(run(get_settings()))
+    asyncio.run(main_async())
 
 
 if __name__ == "__main__":

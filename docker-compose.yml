@@ -17,6 +17,9 @@ x-app-env: &app-env
   FILEFLOW_S3_SECRET_KEY: fileflow-secret
   FILEFLOW_S3_BUCKET: fileflow
   FILEFLOW_KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+  # Single source for the topic name in compose; kafka-init creates the same one.
+  # (Hybrid dev uses the default in app/config.py — keep them equal.)
+  FILEFLOW_KAFKA_TOPIC: ${FILEFLOW_KAFKA_TOPIC:-file-processing}
 
 services:
   postgres:
@@ -92,11 +95,26 @@ services:
       retries: 10
       start_period: 15s
 
+  # One-shot: create the topic, then exit. Partition count is the upper bound
+  # on parallelism within a consumer group; it can be raised later, never lowered:
+  #   docker compose exec kafka /opt/kafka/bin/kafka-topics.sh \
+  #     --bootstrap-server localhost:9092 --alter --topic file-processing --partitions 4
+  kafka-init:
+    image: apache/kafka:3.8.0
+    depends_on:
+      kafka: { condition: service_healthy }
+    entrypoint: >
+      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092
+      --create --if-not-exists --topic ${FILEFLOW_KAFKA_TOPIC:-file-processing}
+      --partitions 1 --replication-factor 1
+    restart: "no"
+
   # One-shot: apply DB migrations, then exit. App processes start only after
   # it succeeds, so no process ever runs against an outdated schema.
   migrate:
     profiles: [app]
     build: .
+    image: fileflow-app  # one image shared by every app service
     command: alembic upgrade head
     environment: *app-env
     depends_on:
@@ -106,24 +124,32 @@ services:
   api:
     profiles: [app]
     build: .
+    image: fileflow-app  # one image shared by every app service
     command: uvicorn app.api.main:app --host 0.0.0.0 --port 8000
     environment: *app-env
     ports: ["8000:8000"]
+    # The process exits if it cannot start (e.g. Kafka down); the supervisor
+    # restarts it, like Kubernetes would.
+    restart: unless-stopped
     depends_on:
       migrate: { condition: service_completed_successfully }
       minio-init: { condition: service_completed_successfully }
-      kafka: { condition: service_healthy }
+      kafka-init: { condition: service_completed_successfully }
 
   # Scale with: docker compose --profile app up -d --scale worker=3
+  # (workers beyond the topic's partition count sit idle)
   worker:
     profiles: [app]
     build: .
+    image: fileflow-app  # one image shared by every app service
     command: python -m app.worker
     environment: *app-env
+    restart: unless-stopped
     stop_grace_period: 30s  # time to finish the current task after SIGTERM
     depends_on:
       migrate: { condition: service_completed_successfully }
       minio-init: { condition: service_completed_successfully }
+      kafka-init: { condition: service_completed_successfully }
 
   # DB web UI, opt-in: docker compose --profile tools up -d adminer
   # http://localhost:8080  System: PostgreSQL, Server: postgres (prefilled),
