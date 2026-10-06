@@ -6,10 +6,10 @@ caller (a service) decides where a transaction begins and ends.
 
 import uuid
 
-from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import File, FileStatus
+from app.repositories.guarded_update import transition_status
 
 
 class FileRepository:
@@ -30,16 +30,7 @@ class FileRepository:
         new: FileStatus,
         **values: object,
     ) -> File | None:
-        """Move a file from `expected` to `new` status in one atomic UPDATE.
-
-        The `WHERE status = expected` guard makes the transition safe against
-        concurrent writers: if someone else already changed the status, zero
-        rows match and None is returned instead of silently overwriting.
-        """
-        stmt = (
-            update(File)
-            .where(File.id == file_id, File.status == expected)
-            .values(status=new, **values)
-            .returning(File)
+        """Move a file from `expected` to `new`; None if it was not in `expected`."""
+        return await transition_status(
+            self._session, File, file_id, allowed_from={expected}, new=new, **values
         )
-        return (await self._session.execute(stmt)).scalar_one_or_none()

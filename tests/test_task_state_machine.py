@@ -1,0 +1,38 @@
+import pytest
+
+from app.models import TaskStatus
+from app.task_state_machine import TRANSITIONS, sources_of
+
+P, R, C, F = TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.COMPLETED, TaskStatus.FAILED
+
+
+def test_every_status_has_an_entry_in_the_transition_table():
+    assert set(TRANSITIONS) == set(TaskStatus)
+
+
+@pytest.mark.parametrize(
+    ("current", "new"),
+    [(P, R), (R, C), (R, F)],
+)
+def test_allowed_transitions(current, new):
+    assert new in TRANSITIONS[current]
+
+
+@pytest.mark.parametrize(
+    ("current", "new"),
+    [(P, C), (P, F), (R, P), (C, R), (C, F), (F, R), (F, C)],
+)
+def test_forbidden_transitions(current, new):
+    assert new not in TRANSITIONS[current]
+
+
+@pytest.mark.parametrize("terminal", [C, F])
+def test_terminal_statuses_have_no_way_out(terminal):
+    assert TRANSITIONS[terminal] == frozenset()
+
+
+def test_sources_of_inverts_the_table():
+    assert sources_of(R) == {P}
+    assert sources_of(C) == {R}
+    assert sources_of(F) == {R}
+    assert sources_of(P) == frozenset()  # nothing re-enters PENDING yet (retries: Phase 08)

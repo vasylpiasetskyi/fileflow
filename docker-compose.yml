@@ -114,6 +114,18 @@ services:
       minio-init: { condition: service_completed_successfully }
       kafka: { condition: service_healthy }
 
+  # DB web UI, opt-in: docker compose --profile tools up -d adminer
+  # http://localhost:8080  System: PostgreSQL, Server: postgres (prefilled),
+  # Username / Password / Database: fileflow / fileflow / fileflow
+  adminer:
+    profiles: [tools]
+    image: adminer:4
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+    ports: ["8080:8080"]
+    depends_on:
+      postgres: { condition: service_healthy }
+
 volumes:
   pgdata:
   miniodata:

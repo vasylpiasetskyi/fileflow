@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from app import db, kafka
 from app.config import Settings
 from app.services.file_service import FileService
+from app.services.task_service import TaskService
 from app.storage import Storage
 
 Probe = Callable[[], Awaitable[None]]
@@ -36,6 +37,10 @@ def get_storage(request: Request) -> Storage:
 def get_file_service(request: Request) -> FileService:
     # Cheap to construct: it only holds references to process-wide resources.
     return FileService(request.app.state.sessionmaker, get_storage(request))
+
+
+def get_task_service(request: Request) -> TaskService:
+    return TaskService(request.app.state.sessionmaker)
 
 
 def get_health_probes(request: Request) -> dict[str, Probe]:

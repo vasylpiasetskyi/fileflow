@@ -50,6 +50,7 @@ docker compose --profile app up -d --build  # everything in containers
 uv run pytest                             # unit tests
 uv run pytest -m integration              # needs running infra
 uv run ruff check . && uv run ruff format .
+uv run python -m experiments.<name>       # phase experiments (experiments/)
 ```
 
 Run lint + tests after every step.

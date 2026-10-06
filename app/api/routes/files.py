@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
 from pydantic import BaseModel, ConfigDict
 
 from app.api.deps import get_file_service, get_settings
+from app.api.routes.tasks import TaskOut
 from app.config import Settings
 from app.models import FileStatus
 from app.services.file_service import FileService, UnknownFileError
@@ -28,6 +29,11 @@ class FileOut(BaseModel):
     created_at: datetime
 
 
+class UploadOut(BaseModel):
+    file: FileOut
+    task: TaskOut
+
+
 async def _read_chunks(upload: UploadFile, chunk_size: int) -> AsyncIterator[bytes]:
     # Starlette has already spooled the multipart body to a temp file (in
     # memory up to 1 MiB, then on disk). We read it back in bounded chunks and
@@ -36,16 +42,16 @@ async def _read_chunks(upload: UploadFile, chunk_size: int) -> AsyncIterator[byt
         yield chunk
 
 
-@router.post("", response_model=FileOut, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=UploadOut, status_code=status.HTTP_201_CREATED)
 async def upload_file(
     file: UploadFile,
     service: Annotated[FileService, Depends(get_file_service)],
     settings: Annotated[Settings, Depends(get_settings)],
-) -> FileOut:
+) -> UploadOut:
     if not file.filename:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "filename is required")
     try:
-        stored = await service.upload(
+        result = await service.upload(
             filename=file.filename,
             content_type=file.content_type or "application/octet-stream",
             chunks=_read_chunks(file, settings.upload_read_chunk_bytes),
@@ -54,7 +60,9 @@ async def upload_file(
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE, "object storage unavailable"
         ) from exc
-    return FileOut.model_validate(stored)
+    return UploadOut(
+        file=FileOut.model_validate(result.file), task=TaskOut.model_validate(result.task)
+    )
 
 
 @router.get("/{file_id}", response_model=FileOut)

@@ -10,7 +10,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from app.api.routes import files, health, ui
+from app.api.routes import files, health, tasks, ui
 from app.config import get_settings
 from app.db import create_engine, create_sessionmaker
 from app.storage import Storage
@@ -46,6 +46,7 @@ def create_app() -> FastAPI:
     app.mount("/static", StaticFiles(directory=ROOT_DIR / "static"), name="static")
     app.include_router(health.router)
     app.include_router(files.router)
+    app.include_router(tasks.router)
     app.include_router(ui.router)
     return app
 
