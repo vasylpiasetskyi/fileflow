@@ -1,7 +1,9 @@
 import hashlib
 from collections.abc import AsyncIterator
 
-from app.services.file_service import StreamDigest
+import pytest
+
+from app.services.file_service import StreamDigest, UploadTooLargeError, limit_size
 from app.storage import rechunk
 
 
@@ -40,3 +42,16 @@ async def test_stream_digest_passes_bytes_through_and_measures_them():
     assert b"".join(passed) == b"hello world"
     assert digest.size == 11
     assert digest.sha256 == hashlib.sha256(b"hello world").hexdigest()
+
+
+async def test_limit_size_passes_a_stream_within_the_limit():
+    assert await _collect(limit_size(_stream(b"abc", b"de"), max_bytes=5)) == [b"abc", b"de"]
+
+
+async def test_limit_size_fails_as_soon_as_the_limit_is_crossed():
+    seen = []
+    with pytest.raises(UploadTooLargeError):
+        async for chunk in limit_size(_stream(b"abc", b"def", b"never read"), max_bytes=5):
+            seen.append(chunk)
+
+    assert seen == [b"abc"]  # stopped on the 2nd chunk, the 3rd was never pulled

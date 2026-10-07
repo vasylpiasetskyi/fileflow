@@ -35,6 +35,9 @@ class Settings(BaseSettings):
 
     # How much we read from the incoming upload per iteration.
     upload_read_chunk_bytes: int = 1024 * 1024
+    # Largest accepted upload. Enforced while streaming (and up front when the
+    # client declares Content-Length), so an oversized body is cut off early.
+    max_upload_bytes: int = 10 * 1024**3
 
     # Kafka
     kafka_bootstrap_servers: str = "localhost:9092"

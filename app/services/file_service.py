@@ -9,7 +9,8 @@ what keeps failures visible:
          INSERT tasks (PENDING)              -- one transaction: all three rows or none
          INSERT outbox_events (PENDING)      -- the event, relayed to Kafka later
 
-- S3 fails            -> row marked FAILED, no object (upload aborted).
+- S3 fails, the client disconnects, the body exceeds max_upload_bytes
+                      -> row marked FAILED, no object (multipart upload aborted).
 - process dies midway -> row stays UPLOADING: an orphan you can find with SQL.
 The reverse order (S3 first) would leave orphan objects nobody knows about.
 
@@ -32,7 +33,25 @@ from app.models import File, FileStatus, Task, TaskStatus
 from app.repositories.file_repository import FileRepository
 from app.repositories.outbox_repository import OutboxRepository
 from app.repositories.task_repository import TaskRepository
-from app.storage import Storage, StorageError
+from app.storage import Storage
+
+
+class UploadTooLargeError(ValueError):
+    """The upload exceeded max_upload_bytes."""
+
+
+async def limit_size(chunks: AsyncIterable[bytes], max_bytes: int) -> AsyncIterator[bytes]:
+    """Pass chunks through, failing as soon as more than `max_bytes` went by.
+
+    The check runs while streaming, so an oversized upload is stopped after
+    max_bytes, not after the whole body has been received and stored.
+    """
+    total = 0
+    async for chunk in chunks:
+        total += len(chunk)
+        if total > max_bytes:
+            raise UploadTooLargeError(f"upload exceeds {max_bytes} bytes")
+        yield chunk
 
 
 class UnknownFileError(LookupError):
@@ -97,9 +116,13 @@ class FileService:
             )
 
         digest = StreamDigest()
+        body = digest.wrap(limit_size(chunks, self._settings.max_upload_bytes))
         try:
-            await self._storage.upload_stream(storage_key, digest.wrap(chunks), content_type)
-        except StorageError:
+            await self._storage.upload_stream(storage_key, body, content_type)
+        except Exception:
+            # Storage failure, client gone, body too large, ...: the multipart
+            # upload was aborted, so record the file as FAILED (not left
+            # UPLOADING) and let the caller map the error to a response.
             async with self._sessionmaker.begin() as session:
                 await self._finish_upload(session, file_id, FileStatus.FAILED)
             raise

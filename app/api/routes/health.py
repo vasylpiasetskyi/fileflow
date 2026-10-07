@@ -38,6 +38,15 @@ async def _run_probe(probe: Probe) -> CheckResult:
     return CheckResult(status="up", latency_ms=round((time.perf_counter() - started) * 1000, 1))
 
 
+@router.get("/health/live")
+async def live() -> dict[str, str]:
+    """Liveness: the process runs and its event loop answers. No dependency checks.
+
+    Cheap enough to poll often — e.g. to see whether a large upload blocks the loop.
+    """
+    return {"status": "ok"}
+
+
 @router.get("/health", response_model=HealthResponse)
 async def health(
     response: Response,

@@ -5,7 +5,7 @@ A learning project for distributed-systems patterns (transactional outbox,
 idempotent consumers, retries/DLQ, leases, graceful shutdown).
 The phase plan is in [docs/PLAN.md](docs/PLAN.md).
 
-> Status: Phase 09 — dead letter queue: failed tasks and rejected messages land in `file-processing-dlq`; operators can redrive.
+> Status: Phase 11 — large files: end-to-end streaming upload, size limits, measured memory/throughput.
 
 ## Run (hybrid dev)
 
@@ -26,7 +26,9 @@ curl localhost:8000/health
 Upload and inspect a file:
 
 ```bash
-curl -F "file=@README.md" localhost:8000/files      # -> 201: {file: UPLOADED, task: PENDING}
+curl -F "file=@README.md" localhost:8000/files      # multipart (HTML-form style)
+curl -X POST -T big.txt -H 'Content-Type: text/plain' \
+     'localhost:8000/files/stream?filename=big.txt'  # raw body, streamed end to end
 curl localhost:8000/files/<file_id>
 curl localhost:8000/tasks/<task_id>                 # COMPLETED + result once a worker ran
 ```
@@ -148,10 +150,35 @@ Redrive never resets `attempt` (it is the fencing token); it raises the task's
 `FAILED` stays terminal. The DLQ is a log, so redriven dead letters remain.
 See `experiments/phase09_dlq.sh`.
 
-Known flaws, on purpose until later phases:
-- **Stuck tasks** (Phase 10-11): a worker killed mid-task leaves it in
-  `PROCESSING`; the redelivered event is rejected by the state machine
-  (`experiments/phase05_kill_consumer.sh`).
+**Large files.** Two upload paths:
+`POST /files` (multipart; Starlette spools the whole body to a temp file
+before our code runs) and `POST /files/stream?filename=` (raw body read from
+the socket with `request.stream()` and piped through hashing into the S3
+multipart upload — nothing on disk, at most one 8 MiB part in memory, and TCP
+backpressure reaches the client). Both enforce `max_upload_bytes` while
+streaming (413; `Content-Length` checked up front), and any error while
+receiving the body (too large, client gone, MinIO down) aborts the multipart
+upload and marks the file `FAILED`. Measured with a 1 GiB text file
+(`uv run python -m experiments.phase11_large_files`, laptop, compose):
+
+| upload    | time   | API cgroup memory | API process RSS | temp disk | `/health/live` p99 / max |
+|-----------|--------|-------------------|-----------------|-----------|--------------------------|
+| multipart | 33–43s | ~1.2 GiB          | 180 MiB         | 1 GiB     | 14 / 31 ms               |
+| stream    | 21–27s | ~150 MiB          | 156 MiB         | 0         | 12 / 20 ms               |
+
+The multipart "memory" is the kernel page cache of the spooled file, charged to
+the container's cgroup (relevant for container memory limits), not the
+process. Hashing in the event loop adds ~10 ms at p99 (idle: 6 ms) — measured,
+not worth moving to a thread. Processing 1 GiB in the worker: ~6.5 s with a
+flat ~90 MiB. Reading the whole file into memory before analysis peaks at
+**~9.9 GiB RSS** for a 1 GiB file (`bytes.split()` materializes every word);
+streaming stays at ~45 MiB, and 64 KiB chunks were the fastest.
+
+Known flaws, accepted:
+- **Stuck tasks**: a worker killed mid-task leaves it in `PROCESSING`; the
+  redelivered event is answered `in_progress`
+  (`experiments/phase05_kill_consumer.sh`). Leases + recovery are a documented
+  perspective, not implemented (`docs/PLAN.md`).
 
 Inspect Kafka:
 

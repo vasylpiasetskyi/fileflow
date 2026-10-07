@@ -80,3 +80,12 @@ async def test_probes_run_concurrently(monkeypatch: pytest.MonkeyPatch):
     assert resp.status_code == 200
     # Sequential would be ~0.6s.
     assert elapsed < 0.45
+
+
+async def test_liveness_does_not_touch_dependencies():
+    # Probes that would hang must not matter: /health/live checks nothing.
+    async with _client({"postgres": _hang, "minio": _hang, "kafka": _hang}) as client:
+        resp = await client.get("/health/live")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}

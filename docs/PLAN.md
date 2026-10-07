@@ -45,30 +45,52 @@ if it adds value).
 | 07 | Idempotency | explicit outcomes (processed / duplicate / in_progress / stale); fencing token (`attempt`) on complete/fail; `UNIQUE(task_id)` | crash after DB commit before offset commit → no-op redelivery (Failure Lab 3, 4) |
 | 08 | Retries | error classification; `PROCESSING → RETRY → PENDING`; exp. backoff + jitter (`next_attempt_at`, DB clock); `recovery` process requeues via outbox | MinIO down → retries then gave up / recovers; binary file → no retry (Failure Lab 5) |
 | 09 | DLQ | `DeadLetter` (task_failed / invalid_message / unknown_task); FAILED + dead letter in one tx (outbox); rejected messages published before offset commit; per-task `max_attempts`; `python -m app.dlq list / redrive` | binary file, poison message, give-up + redrive → COMPLETED (Failure Lab 7) |
+| 11 | Large files | `POST /files/stream` (raw body via `request.stream()` → hash → S3 multipart, no temp file); `max_upload_bytes` enforced while streaming (+ early 413 on `Content-Length`); any intake error → multipart aborted + file `FAILED`; `GET /health/live` | 1 GiB: stream ~1.6× faster, no temp disk; multipart's ~1.2 GiB "memory" is page cache charged to the cgroup (RSS 180 MiB); event-loop blocking ~10 ms p99; whole-file analysis ~9.9 GiB RSS vs ~45 MiB streaming |
 
 ## Remaining (revised)
 
 The original phases 10–19 were merged where they only make sense together:
-10+11+12 (a lease is useless without recovery; shutdown is half done),
 14+18 (concurrency and benchmark are one experiment), 17+19 (most Failure Lab
 scenarios already exist as `experiments/`). Observability moves before the
-benchmark, so there is something to measure with.
+benchmark, so there is something to measure with. Leases / recovery /
+graceful shutdown (10–12) are deferred, see below. Numbering of the remaining
+phases is kept (11–15).
 
 | #  | Phase | Key content | Learn |
 |----|-------|-------------|-------|
-| 10 | Leases, heartbeat, crash recovery, graceful shutdown | `lease_until` set on start and extended by a heartbeat task while processing; complete/fail also check the lease; `recovery` moves `PROCESSING AND lease_until < now()` back to `PENDING` (+ event via outbox); fencing token protects against the zombie owner. SIGTERM: stop consuming, finish the current task within a timeout, otherwise cancel and release the lease; commit, leave the group. Experiments: `kill -9` worker → another worker completes (Failure Lab 2); SIGTERM mid-task | leases vs locks, heartbeats, failure detection, stale work, cancellation, asyncio task management, k8s-like termination |
-| 11 | Large files | true streaming upload from `request.stream()` (no spool to disk), compared with the current multipart/spooled path; 1 GB (5 GB optional, mind the disk); measure memory, time, throughput; chunk size effects | streaming end to end, async generators, memory complexity, backpressure, chunk sizing |
 | 12 | Observability | JSON logs with correlation ids (request_id, event_id, task_id, file_id, worker_id, attempt) propagated API → outbox → Kafka → worker; Prometheus metrics: files_uploaded_total, tasks_completed/failed/retried_total, processing_duration, queue_latency, outbox lag, DLQ size, active_tasks. Grafana optional | correlation ids, metrics vs logs, debugging distributed flows |
 | 13 | Concurrency + benchmark | 1 / 4 / 8 workers (and partitions), 100 files; throughput, avg / p95 latency, queue latency, CPU, memory → report table; find the bottleneck | throughput vs latency, horizontal scaling, diminishing returns, bottleneck analysis |
 | 14 | Minimal UI | one page: upload, task table (file, status, attempt, time), task details (worker, error, result); HTMX polling; no SPA | just enough to see async processing and failures |
-| 15 | Failure Lab + documentation | add the missing scenarios (6: PostgreSQL unavailable; 2 is covered in phase 10); one document with every experiment and its observed result; README: architecture diagram, guarantees, trade-offs; close the backlog below | explaining and defending the design |
+| 15 | Failure Lab + documentation | add the missing scenario 6 (PostgreSQL unavailable); one document with every experiment and its observed result; README: architecture diagram, guarantees, trade-offs; close the backlog below | explaining and defending the design |
+
+## Deferred (perspective, not implemented)
+
+**Leases, heartbeat, crash recovery, graceful shutdown** (originally phases
+10–12). Decided on 2026-10-07 to leave this as a documented perspective.
+
+What it would add: `lease_until` set on `start()` and extended by a heartbeat
+task while a worker processes; `recovery` moving `PROCESSING AND lease_until <
+now()` back to `PENDING` (+ event via outbox); complete/fail also checking the
+lease; SIGTERM handling with a grace timeout that cancels and releases the
+lease instead of leaving it to expire.
+
+Consequences of not doing it (known, accepted):
+- a worker killed mid-task (`kill -9`, OOM) or a database outage right after
+  `start()` leaves the task in `PROCESSING` forever; redelivered events are
+  answered `in_progress` (see `experiments/phase05_kill_consumer.sh`);
+- Failure Lab scenario 2 stays open.
+
+What is already in place for it: the `recovery` process (same shape: find by
+time -> `PENDING` -> outbox event), and the fencing token (`attempt`) that makes
+a recovered task safe from its zombie previous owner — today exercised only by
+tests that simulate recovery with SQL.
 
 ## Failure Lab
 
 | # | Scenario | Status |
 |---|----------|--------|
 | 1 | Kafka down → upload succeeds, outbox `PENDING`, delivered later | ✅ `experiments/phase06_kafka_down.sh` |
-| 2 | Worker crash during `PROCESSING` → lease expires → recovery → another worker → `COMPLETED` | ⏳ phase 10 |
+| 2 | Worker crash during `PROCESSING` → lease expires → recovery → another worker → `COMPLETED` | ⏸ deferred (see above) |
 | 3 | Duplicate message → one result | ✅ `experiments/phase07_duplicate_delivery.sh` |
 | 4 | Crash after Kafka publish → duplicate event → one result | ✅ `experiments/phase06_publisher_crash.sh` |
 | 5 | MinIO unavailable → retry | ✅ `experiments/phase08_retries.sh` |
@@ -79,7 +101,8 @@ benchmark, so there is something to measure with.
 ## Backlog (small fixes, close by phase 15)
 
 - `/health` of the API still probes Kafka, which the API no longer needs
-  (an outage would mark a working API unhealthy); split liveness/readiness.
+  (an outage would mark a working API unhealthy). `/health/live` exists since
+  phase 11; a readiness check without Kafka is still missing.
 - Outbox relay docstring claims "commit order"; it is creation (`now()` at
   transaction start) order — fix the wording.
 - `outbox_events.last_error` is not cleared after a successful publish.
@@ -110,4 +133,4 @@ PENDING ──> PROCESSING ──> COMPLETED
    └──────────────────────────────┘  (recovery, when next_attempt_at is due)
 ```
 
-Phase 10 adds `PROCESSING ──(lease expired, recovery)──> PENDING`.
+Deferred: `PROCESSING ──(lease expired, recovery)──> PENDING`.
