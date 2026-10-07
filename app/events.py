@@ -27,6 +27,3 @@ class TaskQueuedEvent(BaseModel):
         # Kafka message key -> partition. Keying by task_id keeps every event of
         # one task in one partition, hence in order.
         return str(self.task_id).encode()
-
-    def to_bytes(self) -> bytes:
-        return self.model_dump_json().encode()

@@ -1,17 +1,14 @@
-import asyncio
 import hashlib
 import uuid
 
 import pytest
-from aiokafka import AIOKafkaConsumer
 from fastapi import FastAPI
 from sqlalchemy import select
 
 from app.api.deps import get_file_service
 from app.config import get_settings
 from app.events import TaskQueuedEvent
-from app.kafka import PublishError
-from app.models import File, FileStatus, Task, TaskStatus
+from app.models import File, FileStatus, OutboxEvent, OutboxStatus, Task
 from app.services.file_service import FileService
 from app.storage import StorageError
 
@@ -83,7 +80,7 @@ class _UnavailableStorage:
 async def test_storage_failure_returns_503_and_marks_file_failed(app: FastAPI, client):
     sessionmaker = app.state.sessionmaker
     app.dependency_overrides[get_file_service] = lambda: FileService(
-        sessionmaker, _UnavailableStorage(), app.state.publisher
+        sessionmaker, _UnavailableStorage(), get_settings().kafka_topic
     )
     filename = f"doomed-{uuid.uuid4()}.txt"
 
@@ -93,51 +90,39 @@ async def test_storage_failure_returns_503_and_marks_file_failed(app: FastAPI, c
     async with sessionmaker() as session:
         file = await session.scalar(select(File).where(File.filename == filename))
         tasks = (await session.scalars(select(Task).where(Task.file_id == file.id))).all()
+        outbox = (await session.scalars(select(OutboxEvent))).all()
     # The failure is recorded, not lost: the row exists and says FAILED.
     assert file is not None
     assert file.status == FileStatus.FAILED
     assert file.size is None
-    # Nothing to process: a task exists only for an UPLOADED file.
+    # Nothing to process: a task (and its event) exist only for an UPLOADED file.
     assert tasks == []
+    assert outbox == []
 
 
-async def test_upload_publishes_a_task_queued_event(client, kafka_topic):
+async def test_upload_writes_the_event_to_the_outbox_in_the_same_transaction(
+    app, client, kafka_topic
+):
     body = (await client.post("/files", files={"file": ("e.txt", b"event me")})).json()
 
-    consumer = AIOKafkaConsumer(
-        kafka_topic,
-        bootstrap_servers=get_settings().kafka_bootstrap_servers,
-        auto_offset_reset="earliest",
-    )
-    await consumer.start()
-    try:
-        msg = await asyncio.wait_for(consumer.getone(), timeout=10)
-    finally:
-        await consumer.stop()
+    async with app.state.sessionmaker() as session:
+        rows = (await session.scalars(select(OutboxEvent))).all()
 
-    event = TaskQueuedEvent.model_validate_json(msg.value)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.status == OutboxStatus.PENDING
+    assert row.topic == kafka_topic
+    assert row.key == body["task"]["id"]
+    event = TaskQueuedEvent.model_validate(row.payload)
     assert str(event.task_id) == body["task"]["id"]
     assert str(event.file_id) == body["file"]["id"]
-    assert event.attempt == 1
-    assert msg.key == body["task"]["id"].encode()
+    assert event.event_id == row.id  # same id in the table and in Kafka
 
 
-class _UnavailableKafka:
-    async def publish(self, event) -> None:
-        raise PublishError("kafka unavailable")
+async def test_upload_needs_no_kafka(app: FastAPI, client):
+    # The API holds no Kafka client at all; uploads only touch PostgreSQL + MinIO.
+    assert not hasattr(app.state, "publisher")
 
+    resp = await client.post("/files", files={"file": ("k.txt", b"no kafka needed")})
 
-async def test_publish_failure_after_commit_leaves_an_orphan_pending_task(app: FastAPI, client):
-    """Documents the dual-write flaw that Phase 06 (outbox) fixes."""
-    app.state.publisher = _UnavailableKafka()
-    filename = f"orphan-{uuid.uuid4()}.txt"
-
-    resp = await client.post("/files", files={"file": (filename, b"data")})
-
-    assert resp.status_code == 503
-    async with app.state.sessionmaker() as session:
-        file = await session.scalar(select(File).where(File.filename == filename))
-        task = await session.scalar(select(Task).where(Task.file_id == file.id))
-    # The database says "ready to process", yet no event exists: nobody will.
-    assert file.status == FileStatus.UPLOADED
-    assert task.status == TaskStatus.PENDING
+    assert resp.status_code == 201

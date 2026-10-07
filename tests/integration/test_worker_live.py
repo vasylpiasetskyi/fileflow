@@ -114,7 +114,9 @@ async def test_missing_object_fails_the_task(app, client, s3):
 # --- The real worker: Kafka consumer end to end -------------------------------
 
 
-async def test_worker_processes_uploads_end_to_end_and_commits_offsets(client, worker):
+async def test_worker_processes_uploads_end_to_end_and_commits_offsets(
+    client, outbox_publisher, worker
+):
     uploads = [await _upload(client, f"file {i}\n".encode()) for i in range(3)]
 
     for uploaded in uploads:
@@ -136,7 +138,7 @@ async def test_worker_processes_uploads_end_to_end_and_commits_offsets(client, w
         await admin.close()
 
 
-async def test_worker_skips_a_poison_message_and_keeps_going(client, worker):
+async def test_worker_skips_a_poison_message_and_keeps_going(client, outbox_publisher, worker):
     producer = AIOKafkaProducer(bootstrap_servers=worker.kafka_bootstrap_servers)
     await producer.start()
     try:

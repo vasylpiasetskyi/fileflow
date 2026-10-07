@@ -9,7 +9,7 @@ from app.events import TaskQueuedEvent
 def test_event_round_trips_through_json():
     event = TaskQueuedEvent(task_id=uuid.uuid4(), file_id=uuid.uuid4())
 
-    assert TaskQueuedEvent.model_validate_json(event.to_bytes()) == event
+    assert TaskQueuedEvent.model_validate_json(event.model_dump_json().encode()) == event
     assert event.attempt == 1
 
 

@@ -13,7 +13,6 @@ from fastapi.staticfiles import StaticFiles
 from app.api.routes import files, health, tasks, ui
 from app.config import get_settings
 from app.db import create_engine, create_sessionmaker
-from app.kafka import EventPublisher, require_topic
 from app.storage import Storage
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -29,23 +28,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     engine = create_engine(settings)
     storage = Storage(settings)
     await storage.start()
-    # Unlike PostgreSQL and MinIO clients, the producer connects on start():
-    # the API cannot start while Kafka is down. (Phase 06 moves publishing
-    # out of the API into the outbox publisher.)
-    await require_topic(settings)
-    publisher = EventPublisher(settings)
-    await publisher.start()
+    # No Kafka client here: events go to the outbox table and the outbox
+    # publisher relays them. The API starts and accepts uploads with Kafka down.
 
     app.state.settings = settings
     app.state.engine = engine
     app.state.sessionmaker = create_sessionmaker(engine)
     app.state.storage = storage
-    app.state.publisher = publisher
     try:
         yield
     finally:
         # Close in reverse order of creation.
-        await publisher.stop()
         await storage.close()
         await engine.dispose()
 

@@ -17,6 +17,7 @@ import asyncpg
 import httpx
 import pytest
 from aiobotocore.session import get_session
+from aiokafka import AIOKafkaConsumer, ConsumerRecord
 from aiokafka.admin import AIOKafkaAdminClient, NewTopic
 from alembic import command
 from alembic.config import Config
@@ -27,6 +28,7 @@ from sqlalchemy.engine import make_url
 from app.api.main import create_app
 from app.config import get_settings
 from app.db import create_engine
+from app.outbox.__main__ import run as run_outbox_publisher
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 
@@ -70,7 +72,7 @@ def migrated_database() -> None:
 async def clean_tables(migrated_database) -> None:
     engine = create_engine(get_settings())
     async with engine.begin() as conn:
-        await conn.execute(text("TRUNCATE task_results, tasks, files"))
+        await conn.execute(text("TRUNCATE outbox_events, task_results, tasks, files"))
     await engine.dispose()
 
 
@@ -121,3 +123,33 @@ async def s3():
         region_name=settings.s3_region,
     ) as client:
         yield client
+
+
+@pytest.fixture
+async def outbox_publisher(kafka_topic: str) -> AsyncIterator[None]:
+    """The real outbox publisher loop running in the background."""
+    stop = asyncio.Event()
+    task = asyncio.create_task(run_outbox_publisher(get_settings(), stop))
+    yield
+    stop.set()
+    await asyncio.wait_for(task, timeout=10)
+
+
+async def read_topic(topic: str, count: int) -> list[ConsumerRecord]:
+    """Read the first `count` messages of a topic (fails after 10s)."""
+    consumer = AIOKafkaConsumer(
+        topic,
+        bootstrap_servers=get_settings().kafka_bootstrap_servers,
+        auto_offset_reset="earliest",
+    )
+    await consumer.start()
+    records: list[ConsumerRecord] = []
+    try:
+        async with asyncio.timeout(10):
+            while len(records) < count:
+                batch = await consumer.getmany(timeout_ms=500)
+                for messages in batch.values():
+                    records.extend(messages)
+    finally:
+        await consumer.stop()
+    return records

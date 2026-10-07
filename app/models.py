@@ -10,12 +10,15 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Index,
     Integer,
     MetaData,
     String,
     Text,
     func,
+    text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 # Deterministic constraint names, so Alembic can later drop/alter them by name.
@@ -59,6 +62,11 @@ class TaskStatus(enum.StrEnum):
     PROCESSING = "PROCESSING"  # claimed by a worker
     COMPLETED = "COMPLETED"  # terminal: processed successfully
     FAILED = "FAILED"  # terminal: processing gave up
+
+
+class OutboxStatus(enum.StrEnum):
+    PENDING = "PENDING"  # committed, not yet confirmed by Kafka
+    PUBLISHED = "PUBLISHED"  # Kafka acked it (it may still have been sent more than once)
 
 
 class File(Base):
@@ -121,3 +129,36 @@ class TaskResult(Base):
     word_count: Mapped[int] = mapped_column(BigInteger)
     processing_ms: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class OutboxEvent(Base):
+    """A message waiting to be relayed to Kafka (transactional outbox).
+
+    Written in the same transaction as the state change it announces; the
+    outbox publisher process sends it later. The row id is the event_id inside
+    the payload, so every copy of a message in Kafka carries the same id.
+    """
+
+    __tablename__ = "outbox_events"
+    __mapper_args__ = {"eager_defaults": True}
+    __table_args__ = (
+        status_check(OutboxStatus),
+        # The publisher only ever looks for PENDING rows, oldest first. A
+        # partial index stays small while PUBLISHED rows pile up.
+        Index(
+            "ix_outbox_events_pending_created_at",
+            "created_at",
+            postgresql_where=text("status = 'PENDING'"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    topic: Mapped[str] = mapped_column(String(255))
+    key: Mapped[str] = mapped_column(String(255))
+    payload: Mapped[dict] = mapped_column(JSONB)
+    status: Mapped[OutboxStatus] = mapped_column(status_column(OutboxStatus))
+    # Publish attempts (successful or not) and the last failure, for visibility.
+    attempts: Mapped[int] = mapped_column(Integer, server_default="0")
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

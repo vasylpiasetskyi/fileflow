@@ -9,7 +9,6 @@ from pydantic import BaseModel, ConfigDict
 from app.api.deps import get_file_service, get_settings
 from app.api.routes.tasks import TaskOut
 from app.config import Settings
-from app.kafka import PublishError
 from app.models import FileStatus
 from app.services.file_service import FileService, UnknownFileError
 from app.storage import StorageError
@@ -60,13 +59,6 @@ async def upload_file(
     except StorageError as exc:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE, "object storage unavailable"
-        ) from exc
-    except PublishError as exc:
-        # The file and its task ARE committed, but no worker will hear about it.
-        # The client gets an error for an upload that half-succeeded: the
-        # dual-write problem made visible (fixed by the outbox in Phase 06).
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE, "file stored but could not be queued"
         ) from exc
     return UploadOut(
         file=FileOut.model_validate(result.file), task=TaskOut.model_validate(result.task)

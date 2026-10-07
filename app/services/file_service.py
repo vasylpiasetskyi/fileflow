@@ -6,18 +6,17 @@ what keeps failures visible:
     tx1: INSERT files (UPLOADING)          -- committed before any byte is sent
          stream bytes -> S3 (multipart)
     tx2: UPLOADING -> UPLOADED + size/checksum
-         INSERT tasks (PENDING)            -- same transaction: never one without the other
-         publish TaskQueuedEvent -> Kafka  -- AFTER commit: a dual write (see below)
+         INSERT tasks (PENDING)              -- one transaction: all three rows or none
+         INSERT outbox_events (PENDING)      -- the event, relayed to Kafka later
 
 - S3 fails            -> row marked FAILED, no object (upload aborted).
 - process dies midway -> row stays UPLOADING: an orphan you can find with SQL.
 The reverse order (S3 first) would leave orphan objects nobody knows about.
 
-Known flaw, kept on purpose until Phase 06: tx2 and the Kafka publish are two
-independent writes. If Kafka is unavailable after tx2 committed, the task is
-PENDING in the database but no event exists, so no worker will ever pick it
-up. Publishing *before* the commit is no better: the event could then refer to
-a task that is rolled back. The transactional outbox fixes this.
+Transactional outbox: the API never talks to Kafka. The event is a row written
+atomically with the task it announces, so "task exists" and "event will be
+sent" can no longer disagree. The outbox publisher process (app/outbox) relays
+it to Kafka, retrying for as long as Kafka is unavailable.
 """
 
 import hashlib
@@ -28,9 +27,9 @@ from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.events import TaskQueuedEvent
-from app.kafka import EventPublisher
 from app.models import File, FileStatus, Task, TaskStatus
 from app.repositories.file_repository import FileRepository
+from app.repositories.outbox_repository import OutboxRepository
 from app.repositories.task_repository import TaskRepository
 from app.storage import Storage, StorageError
 
@@ -72,11 +71,11 @@ class FileService:
         self,
         sessionmaker: async_sessionmaker[AsyncSession],
         storage: Storage,
-        publisher: EventPublisher,
+        topic: str,
     ) -> None:
         self._sessionmaker = sessionmaker
         self._storage = storage
-        self._publisher = publisher
+        self._topic = topic  # where the outbox publisher will send the task's event
 
     async def upload(
         self, filename: str, content_type: str, chunks: AsyncIterable[bytes]
@@ -104,8 +103,9 @@ class FileService:
                 await self._finish_upload(session, file_id, FileStatus.FAILED)
             raise
 
-        # tx2: the file becomes UPLOADED *and* gets its processing task atomically.
-        # If anything here fails, both roll back and the file stays UPLOADING.
+        # tx2: the file becomes UPLOADED, gets its processing task and the event
+        # announcing it — atomically. If anything fails, all three roll back
+        # and the file stays UPLOADING.
         async with self._sessionmaker.begin() as session:
             file = await self._finish_upload(
                 session,
@@ -116,9 +116,9 @@ class FileService:
             )
             task = Task(id=uuid.uuid4(), file_id=file_id, status=TaskStatus.PENDING, attempt=0)
             TaskRepository(session).add(task)
-
-        # The dual write: committed above, published here. Raises PublishError.
-        await self._publisher.publish(TaskQueuedEvent(task_id=task.id, file_id=file_id))
+            OutboxRepository(session).add(
+                self._topic, TaskQueuedEvent(task_id=task.id, file_id=file_id)
+            )
         return UploadResult(file=file, task=task)
 
     async def get(self, file_id: uuid.UUID) -> File:

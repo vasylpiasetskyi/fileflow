@@ -134,6 +134,19 @@ services:
     depends_on:
       migrate: { condition: service_completed_successfully }
       minio-init: { condition: service_completed_successfully }
+      # No Kafka dependency: the API only writes to the outbox table.
+
+  # Relays outbox_events rows to Kafka. One instance is enough (and keeps
+  # events in commit order); more are safe thanks to FOR UPDATE SKIP LOCKED.
+  outbox-publisher:
+    profiles: [app]
+    build: .
+    image: fileflow-app  # one image shared by every app service
+    command: python -m app.outbox
+    environment: *app-env
+    restart: unless-stopped
+    depends_on:
+      migrate: { condition: service_completed_successfully }
       kafka-init: { condition: service_completed_successfully }
 
   # Scale with: docker compose --profile app up -d --scale worker=3

@@ -65,7 +65,7 @@ def _record(value: bytes, offset: int = 41) -> ConsumerRecord:
 
 
 def _event_bytes() -> bytes:
-    return TaskQueuedEvent(task_id=uuid.uuid4(), file_id=uuid.uuid4()).to_bytes()
+    return TaskQueuedEvent(task_id=uuid.uuid4(), file_id=uuid.uuid4()).model_dump_json().encode()
 
 
 async def _handle(service, value: bytes) -> FakeConsumer:

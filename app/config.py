@@ -9,6 +9,7 @@ the app containers override these with service names (`postgres`, `minio`, `kafk
 import os
 import socket
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -44,9 +45,19 @@ class Settings(BaseSettings):
     # Per-request timeout of the Kafka client (metadata, produce requests).
     kafka_request_timeout_ms: int = 5000
     # Upper bound for one publish() call. Needed because an idempotent producer
-    # retries a failing send indefinitely: without it, an upload request hangs
-    # for as long as Kafka is down.
+    # retries a failing send indefinitely: without it, a relay round hangs (with
+    # its outbox rows locked) for as long as Kafka is down.
     kafka_publish_timeout_s: float = 10.0
+
+    # Outbox publisher
+    # Pause between relay rounds when the outbox is empty or Kafka failed.
+    outbox_poll_interval_s: float = 0.5
+    # Max rows locked and sent per round (one transaction).
+    outbox_batch_size: int = 100
+    # FAILURE LAB ONLY. Kill the process (os._exit) at this point of a round:
+    # "before_publish" (rows locked, nothing sent) or "after_publish" (Kafka
+    # acked, rows not yet marked PUBLISHED). Empty = never.
+    outbox_crash_point: Literal["", "before_publish", "after_publish"] = ""
 
     # Worker
     # Identifies which process claimed a task. hostname = container id under compose.

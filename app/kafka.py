@@ -1,16 +1,13 @@
 """Kafka client wiring: health probe and event publisher."""
 
 import asyncio
-import logging
 
 from aiokafka import AIOKafkaProducer
 from aiokafka.admin import AIOKafkaAdminClient
 from aiokafka.errors import KafkaError
+from aiokafka.structs import RecordMetadata
 
 from app.config import Settings
-from app.events import TaskQueuedEvent
-
-log = logging.getLogger(__name__)
 
 
 class PublishError(Exception):
@@ -62,7 +59,6 @@ class EventPublisher:
     """Long-lived Kafka producer, one per process."""
 
     def __init__(self, settings: Settings) -> None:
-        self._topic = settings.kafka_topic
         self._publish_timeout_s = settings.kafka_publish_timeout_s
         self._producer = AIOKafkaProducer(
             bootstrap_servers=settings.kafka_bootstrap_servers,
@@ -84,26 +80,16 @@ class EventPublisher:
         # Flushes buffered messages, then closes connections.
         await self._producer.stop()
 
-    async def publish(self, event: TaskQueuedEvent) -> None:
+    async def publish(self, topic: str, key: bytes, value: bytes) -> RecordMetadata:
         """Send and wait for the broker's ack, at most kafka_publish_timeout_s.
 
         A timeout does NOT mean "not sent": the message already sits in the
         producer's buffer and may still reach Kafka later. The outcome is
-        unknown — one more reason the caller cannot treat publish + DB commit
-        as one atomic step.
+        unknown — which is fine for the outbox: the row stays PENDING and is
+        sent again, at worst producing a duplicate.
         """
         try:
             async with asyncio.timeout(self._publish_timeout_s):
-                meta = await self._producer.send_and_wait(
-                    self._topic, value=event.to_bytes(), key=event.key
-                )
+                return await self._producer.send_and_wait(topic, value=value, key=key)
         except (KafkaError, TimeoutError) as exc:
-            raise PublishError(f"cannot publish event {event.event_id}: {exc!r}") from exc
-        log.info(
-            "published event %s for task %s to %s[%d]@%d",
-            event.event_id,
-            event.task_id,
-            meta.topic,
-            meta.partition,
-            meta.offset,
-        )
+            raise PublishError(f"cannot publish to {topic}: {exc!r}") from exc
