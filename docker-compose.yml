@@ -20,6 +20,11 @@ x-app-env: &app-env
   # Single source for the topic name in compose; kafka-init creates the same one.
   # (Hybrid dev uses the default in app/config.py — keep them equal.)
   FILEFLOW_KAFKA_TOPIC: ${FILEFLOW_KAFKA_TOPIC:-file-processing}
+  # Retry policy; override from the shell for fast experiments, e.g.
+  #   FILEFLOW_RETRY_BASE_DELAY_S=2 FILEFLOW_RETRY_BACKOFF_FACTOR=2 docker compose --profile app up -d
+  FILEFLOW_TASK_MAX_ATTEMPTS: ${FILEFLOW_TASK_MAX_ATTEMPTS:-5}
+  FILEFLOW_RETRY_BASE_DELAY_S: ${FILEFLOW_RETRY_BASE_DELAY_S:-5}
+  FILEFLOW_RETRY_BACKOFF_FACTOR: ${FILEFLOW_RETRY_BACKOFF_FACTOR:-5}
 
 services:
   postgres:
@@ -148,6 +153,18 @@ services:
     depends_on:
       migrate: { condition: service_completed_successfully }
       kafka-init: { condition: service_completed_successfully }
+
+  # Requeues RETRY tasks when due (and, from Phase 11, tasks with expired
+  # leases). Talks only to PostgreSQL: events go through the outbox.
+  recovery:
+    profiles: [app]
+    build: .
+    image: fileflow-app  # one image shared by every app service
+    command: python -m app.recovery
+    environment: *app-env
+    restart: unless-stopped
+    depends_on:
+      migrate: { condition: service_completed_successfully }
 
   # Scale with: docker compose --profile app up -d --scale worker=3
   # (workers beyond the topic's partition count sit idle)

@@ -3,7 +3,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from app.processing import StreamAnalyzer, analyze
+from app.processing import StreamAnalyzer, UnsupportedFormatError, analyze
 
 SAMPLES = [
     b"",
@@ -57,3 +57,9 @@ async def test_analyze_consumes_an_async_stream():
     stats = await analyze(stream())
 
     assert (stats.size, stats.line_count, stats.word_count) == (13, 1, 3)
+
+
+@pytest.mark.parametrize("chunks", [[b"text\x00more"], [b"plain text ", b"then \x00 binary"]])
+def test_binary_content_is_rejected(chunks):
+    with pytest.raises(UnsupportedFormatError):
+        _feed(chunks)

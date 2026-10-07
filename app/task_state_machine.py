@@ -1,7 +1,9 @@
 """Task state machine: the single source of truth for allowed status changes.
 
     PENDING ──> PROCESSING ──> COMPLETED
-                          └──> FAILED
+       ▲                  ├──> FAILED
+       │                  └──> RETRY ──┐   (retryable failure, attempts left)
+       └───────────────────────────────┘   (recovery, once next_attempt_at is due)
 
 The table is data, not scattered if-statements. Repositories turn it into a
 guarded UPDATE (`WHERE status IN sources_of(new)`), so checking the rule and
@@ -12,7 +14,8 @@ from app.models import TaskStatus
 
 TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
     TaskStatus.PENDING: frozenset({TaskStatus.PROCESSING}),
-    TaskStatus.PROCESSING: frozenset({TaskStatus.COMPLETED, TaskStatus.FAILED}),
+    TaskStatus.PROCESSING: frozenset({TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.RETRY}),
+    TaskStatus.RETRY: frozenset({TaskStatus.PENDING}),
     TaskStatus.COMPLETED: frozenset(),
     TaskStatus.FAILED: frozenset(),
 }

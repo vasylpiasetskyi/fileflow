@@ -25,7 +25,7 @@ One codebase, one Docker image, several processes (selected by `command`):
 - `api` — FastAPI: REST + Jinja2/HTMX UI (`app/api/`)
 - `worker` — Kafka consumer (`app/worker/`), group `fileflow-workers`
 - `outbox-publisher` — relays `outbox_events` to Kafka (`app/outbox/`)
-- `recovery` — separate process (later phase)
+- `recovery` — requeues due `RETRY` tasks via the outbox (`app/recovery/`); expired leases later
 
 Infra: PostgreSQL (metadata, task state, outbox), MinIO/S3 (blobs only — file
 contents never go into PostgreSQL), Kafka (KRaft, single broker).

@@ -5,11 +5,22 @@ the file is. Counting semantics follow `wc`:
 
 - lines: number of b"\\n" bytes (a last line without newline is not counted)
 - words: maximal runs of non-whitespace bytes (ASCII whitespace, like bytes.split())
+
+Only text is supported: a NUL byte marks the file as binary and analysis stops
+with UnsupportedFormatError (a permanent failure — retrying cannot help).
 """
 
 import hashlib
 from collections.abc import AsyncIterable
 from dataclasses import dataclass
+
+
+class UnsupportedFormatError(ValueError):
+    """The file is not text (contains NUL bytes)."""
+
+
+class ChecksumMismatchError(ValueError):
+    """Stored bytes differ from what was uploaded: the object is corrupted."""
 
 
 @dataclass(frozen=True)
@@ -35,6 +46,8 @@ class StreamAnalyzer:
     def feed(self, chunk: bytes) -> None:
         if not chunk:
             return
+        if b"\x00" in chunk:
+            raise UnsupportedFormatError(f"binary content (NUL byte near offset {self._size})")
         self._sha256.update(chunk)
         self._size += len(chunk)
         self._lines += chunk.count(b"\n")

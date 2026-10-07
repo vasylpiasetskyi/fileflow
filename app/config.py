@@ -72,6 +72,21 @@ class Settings(BaseSettings):
     # committed -> the message is redelivered. Empty = never.
     worker_crash_point: Literal["", "after_processing"] = ""
 
+    # Retries (see app/retry.py)
+    # Total attempts per task, the first one included; then FAILED.
+    task_max_attempts: int = Field(default=5, ge=1)
+    # Delay before retry n (n = attempt that failed):
+    #   min(max, base * factor^(n-1)) * random(1 - jitter, 1 + jitter)
+    # Defaults: ~5s, ~25s, ~2min, ~10min.
+    retry_base_delay_s: float = 5.0
+    retry_backoff_factor: float = 5.0
+    retry_max_delay_s: float = 900.0
+    retry_jitter: float = Field(default=0.2, ge=0, lt=1)
+
+    # Recovery process: requeues RETRY tasks once they are due.
+    recovery_poll_interval_s: float = 1.0
+    recovery_batch_size: int = 100
+
     # Health checks: how long a single dependency probe may take
     health_check_timeout_s: float = 2.0
 

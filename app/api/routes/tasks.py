@@ -22,6 +22,7 @@ class TaskOut(BaseModel):
     worker_id: str | None
     error: str | None
     created_at: datetime
+    next_attempt_at: datetime | None
     started_at: datetime | None
     finished_at: datetime | None
 

@@ -12,6 +12,7 @@ lease expired) can therefore never overwrite the new owner's work.
 """
 
 import uuid
+from datetime import timedelta
 
 from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -62,6 +63,7 @@ class TaskService:
             worker_id=worker_id,
             started_at=func.now(),
             finished_at=None,
+            next_attempt_at=None,
         )
 
     async def complete(
@@ -75,7 +77,11 @@ class TaskService:
         async with self._sessionmaker.begin() as session:
             repo = TaskRepository(session)
             task = await repo.transition(
-                task_id, TaskStatus.COMPLETED, expected_attempt=attempt, finished_at=func.now()
+                task_id,
+                TaskStatus.COMPLETED,
+                expected_attempt=attempt,
+                finished_at=func.now(),
+                error=None,  # earlier attempts may have failed; this one did not
             )
             if task is not None:
                 repo.add_result(
@@ -100,6 +106,19 @@ class TaskService:
             expected_attempt=attempt,
             error=error,
             finished_at=func.now(),
+        )
+
+    async def schedule_retry(
+        self, task_id: uuid.UUID, attempt: int, error: str, delay_s: float
+    ) -> Task:
+        """PROCESSING -> RETRY, due in `delay_s` (database clock); owner of `attempt` only."""
+        return await self._transition(
+            task_id,
+            TaskStatus.RETRY,
+            expected_attempt=attempt,
+            error=error,
+            finished_at=func.now(),
+            next_attempt_at=func.now() + timedelta(seconds=delay_s),
         )
 
     async def _transition(self, task_id: uuid.UUID, new: TaskStatus, **values: object) -> Task:

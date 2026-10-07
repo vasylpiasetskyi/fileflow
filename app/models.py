@@ -60,6 +60,7 @@ class FileStatus(enum.StrEnum):
 class TaskStatus(enum.StrEnum):
     PENDING = "PENDING"  # waiting for a worker
     PROCESSING = "PROCESSING"  # claimed by a worker
+    RETRY = "RETRY"  # a retryable failure; waits until next_attempt_at
     COMPLETED = "COMPLETED"  # terminal: processed successfully
     FAILED = "FAILED"  # terminal: processing gave up
 
@@ -94,14 +95,25 @@ class Task(Base):
     # Fetch server-generated columns (created_at, ...) via INSERT ... RETURNING,
     # so the object is complete right after commit without an extra SELECT.
     __mapper_args__ = {"eager_defaults": True}
-    __table_args__ = (status_check(TaskStatus),)
+    __table_args__ = (
+        status_check(TaskStatus),
+        # The recovery process looks only for RETRY tasks whose time has come.
+        Index(
+            "ix_tasks_retry_next_attempt_at",
+            "next_attempt_at",
+            postgresql_where=text("status = 'RETRY'"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
     file_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("files.id"), index=True)
     status: Mapped[TaskStatus] = mapped_column(status_column(TaskStatus), index=True)
-    # Incremented on every PENDING -> PROCESSING; retries (Phase 08) build on it.
+    # Incremented on every PENDING -> PROCESSING; also the fencing token.
     attempt: Mapped[int] = mapped_column(Integer, server_default="0")
+    # The most recent failure (kept while retrying, cleared on success).
     error: Mapped[str | None] = mapped_column(Text)
+    # When a RETRY task becomes due again (database clock).
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # The worker that claimed the task most recently.
     worker_id: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

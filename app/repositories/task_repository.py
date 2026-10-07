@@ -2,6 +2,7 @@
 
 import uuid
 
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Task, TaskResult, TaskStatus
@@ -44,6 +45,23 @@ class TaskRepository:
             where=where,
             **values,
         )
+
+    async def lock_due_retries(self, limit: int) -> list[Task]:
+        """Lock up to `limit` RETRY tasks whose next_attempt_at has passed.
+
+            SELECT ... WHERE status = 'RETRY' AND next_attempt_at <= now()
+            ORDER BY next_attempt_at LIMIT :limit FOR UPDATE SKIP LOCKED
+
+        now() is the database clock, the same one that set next_attempt_at.
+        """
+        stmt = (
+            select(Task)
+            .where(Task.status == TaskStatus.RETRY, Task.next_attempt_at <= func.now())
+            .order_by(Task.next_attempt_at)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        return list((await self._session.scalars(stmt)).all())
 
     def add_result(self, result: TaskResult) -> None:
         self._session.add(result)

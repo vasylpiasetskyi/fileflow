@@ -95,6 +95,7 @@ async def test_invalid_message_is_skipped_without_calling_the_service():
     [
         ProcessingResult(Outcome.DUPLICATE, TaskStatus.COMPLETED, 1),
         ProcessingResult(Outcome.IN_PROGRESS, TaskStatus.PROCESSING, 1),
+        ProcessingResult(Outcome.SCHEDULED, TaskStatus.RETRY, 1),
         ProcessingResult(Outcome.STALE, TaskStatus.PROCESSING, 2),
     ],
     ids=lambda r: r.outcome,

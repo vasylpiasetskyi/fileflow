@@ -5,7 +5,7 @@ A learning project for distributed-systems patterns (transactional outbox,
 idempotent consumers, retries/DLQ, leases, graceful shutdown).
 The phase plan is in [docs/PLAN.md](docs/PLAN.md).
 
-> Status: Phase 07 — idempotent processing: duplicates are harmless, stale workers are fenced off.
+> Status: Phase 08 — retries: transient failures are retried with exponential backoff + jitter.
 
 ## Run (hybrid dev)
 
@@ -18,6 +18,7 @@ uv run alembic upgrade head          # apply DB migrations
 uv run uvicorn app.api.main:app --reload
 uv run python -m app.outbox          # another terminal: relays outbox -> Kafka
 uv run python -m app.worker          # another terminal: Kafka consumer
+uv run python -m app.recovery        # another terminal: requeues due retries
 open http://localhost:8000           # UI
 curl localhost:8000/health
 ```
@@ -68,6 +69,8 @@ app/
   events.py        Kafka message schemas (TaskQueuedEvent)
   kafka.py         Kafka health probe + producer wrapper
   outbox/          outbox publisher process (python -m app.outbox)
+  recovery/        recovery process: requeues due retries (python -m app.recovery)
+  retry.py         retry policy: error classification + backoff (pure)
   worker/          worker process: Kafka consumer loop (python -m app.worker)
   api/
     main.py        app factory + lifespan (resource setup/teardown)
@@ -111,6 +114,17 @@ owner can never overwrite the current one), and `UNIQUE(task_results.task_id)`
 as the last line of defense. No inbox table: `task_id` is the natural
 idempotency key. See `experiments/phase07_duplicate_delivery.sh`.
 
+**Retries.** Failures are classified (`app/retry.py`): permanent — corrupted
+object (checksum), binary file, missing object/file row — go straight to
+`FAILED`; everything else (MinIO/DB/network trouble, unknown errors) is
+retryable. A retryable failure with attempts left moves the task to `RETRY`
+with `next_attempt_at = now() + min(max, base * factor^(n-1)) ± jitter`
+(defaults ~5s, 25s, 2min, 10min; 5 attempts). The **recovery** process
+(`python -m app.recovery`) finds due `RETRY` tasks (`FOR UPDATE SKIP LOCKED`)
+and, in one transaction, moves them to `PENDING` and writes a new
+`TaskQueuedEvent` to the outbox. No sleeping in the worker, no retry topics.
+See `experiments/phase08_retries.sh`.
+
 Known flaws, on purpose until later phases:
 - **Stuck tasks** (Phase 10-11): a worker killed mid-task leaves it in
   `PROCESSING`; the redelivered event is rejected by the state machine
@@ -129,7 +143,9 @@ docker compose exec kafka $K/kafka-console-consumer.sh --bootstrap-server localh
 
 ```text
 PENDING ──> PROCESSING ──> COMPLETED
-                      └──> FAILED
+   ▲                 ├───> FAILED   (permanent error, or attempts exhausted)
+   │                 └───> RETRY ─┐ (retryable error, attempts left)
+   └──────────────────────────────┘ (recovery, once next_attempt_at is due)
 ```
 
 A file becomes `UPLOADED` and gets its `PENDING` task in one transaction.
