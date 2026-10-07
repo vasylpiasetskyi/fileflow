@@ -20,15 +20,29 @@ class TaskRepository:
         return await self._session.get(Task, task_id)
 
     async def transition(
-        self, task_id: uuid.UUID, new: TaskStatus, **values: object
+        self,
+        task_id: uuid.UUID,
+        new: TaskStatus,
+        *,
+        expected_attempt: int | None = None,
+        **values: object,
     ) -> Task | None:
         """Move a task to `new` if the state machine allows it from its current status.
 
-        Returns None when the task is missing or in a status from which `new`
-        cannot be entered (including "someone else got there first").
+        `expected_attempt` is a fencing token: when given, the change applies
+        only if the task is still on that attempt, i.e. still owned by the caller who
+        started it. Returns None when the task is missing, in a status from
+        which `new` cannot be entered, or on another attempt.
         """
+        where = (Task.attempt == expected_attempt,) if expected_attempt is not None else ()
         return await transition_status(
-            self._session, Task, task_id, allowed_from=sources_of(new), new=new, **values
+            self._session,
+            Task,
+            task_id,
+            allowed_from=sources_of(new),
+            new=new,
+            where=where,
+            **values,
         )
 
     def add_result(self, result: TaskResult) -> None:

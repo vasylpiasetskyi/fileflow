@@ -2,10 +2,10 @@
 
 import enum
 import uuid
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from typing import TypeVar
 
-from sqlalchemy import update
+from sqlalchemy import ColumnElement, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Base
@@ -20,6 +20,7 @@ async def transition_status(
     *,
     allowed_from: Collection[enum.Enum],
     new: enum.Enum,
+    where: Sequence[ColumnElement[bool]] = (),
     **values: object,
 ) -> ModelT | None:
     """Atomically move a row to status `new` if it is currently in `allowed_from`.
@@ -31,10 +32,12 @@ async def transition_status(
     then (READ COMMITTED) re-evaluates its WHERE against the committed row,
     matches nothing and returns None. Exactly one writer wins — no
     read-check-write gap like `SELECT status` + `if` + `UPDATE` would have.
+
+    `where` adds conditions to the same atomic check (e.g. a fencing token).
     """
     stmt = (
         update(model)
-        .where(model.id == row_id, model.status.in_(list(allowed_from)))
+        .where(model.id == row_id, model.status.in_(list(allowed_from)), *where)
         .values(status=new, **values)
         .returning(model)
     )

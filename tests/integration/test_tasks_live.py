@@ -63,7 +63,7 @@ async def test_happy_path_pending_processing_completed(client, tasks):
     assert started.worker_id == WORKER
     assert started.started_at is not None
 
-    completed = await tasks.complete(task_id, STATS, processing_ms=5)
+    completed = await tasks.complete(task_id, 1, STATS, processing_ms=5)
     assert completed.status == TaskStatus.COMPLETED
     assert completed.finished_at is not None
     result = await tasks.get_result(task_id)
@@ -74,7 +74,7 @@ async def test_fail_records_the_error(client, tasks):
     task_id = uuid.UUID((await _upload(client))["task"]["id"])
     await tasks.start(task_id, WORKER)
 
-    failed = await tasks.fail(task_id, "unsupported format")
+    failed = await tasks.fail(task_id, 1, "unsupported format")
 
     assert failed.status == TaskStatus.FAILED
     assert failed.error == "unsupported format"
@@ -85,7 +85,7 @@ async def test_illegal_transition_is_rejected_and_state_is_unchanged(client, tas
 
     with pytest.raises(TaskTransitionConflictError) as exc_info:
         # PENDING -> COMPLETED skips PROCESSING
-        await tasks.complete(task_id, STATS, processing_ms=5)
+        await tasks.complete(task_id, 1, STATS, processing_ms=5)
 
     assert exc_info.value.current == TaskStatus.PENDING
     assert (await tasks.get(task_id)).status == TaskStatus.PENDING
@@ -95,7 +95,7 @@ async def test_illegal_transition_is_rejected_and_state_is_unchanged(client, tas
 async def test_terminal_task_cannot_be_restarted(client, tasks):
     task_id = uuid.UUID((await _upload(client))["task"]["id"])
     await tasks.start(task_id, WORKER)
-    await tasks.complete(task_id, STATS, processing_ms=5)
+    await tasks.complete(task_id, 1, STATS, processing_ms=5)
 
     with pytest.raises(TaskTransitionConflictError):
         await tasks.start(task_id, WORKER)

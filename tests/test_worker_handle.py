@@ -7,12 +7,14 @@ decisions, not about Kafka or PostgreSQL.
 import asyncio
 import uuid
 
+import pytest
 from aiokafka import ConsumerRecord, TopicPartition
 
 from app.config import Settings
 from app.events import TaskQueuedEvent
 from app.models import TaskStatus
-from app.services.task_service import TaskTransitionConflictError, UnknownTaskError
+from app.services.processing_service import Outcome, ProcessingResult
+from app.services.task_service import UnknownTaskError
 from app.worker.__main__ import handle
 
 TP = TopicPartition("file-processing", 0)
@@ -43,9 +45,7 @@ class FakeService:
         return self.outcome
 
 
-class FakeTask:
-    id = uuid.uuid4()
-    status = TaskStatus.COMPLETED
+PROCESSED = ProcessingResult(Outcome.PROCESSED, TaskStatus.COMPLETED, 1)
 
 
 def _record(value: bytes, offset: int = 41) -> ConsumerRecord:
@@ -75,14 +75,14 @@ async def _handle(service, value: bytes) -> FakeConsumer:
 
 
 async def test_processed_message_commits_the_next_offset():
-    consumer = await _handle(FakeService(FakeTask()), _event_bytes())
+    consumer = await _handle(FakeService(PROCESSED), _event_bytes())
 
     assert consumer.commits == [{TP: 42}]  # offset 41 done -> next to read is 42
     assert consumer.seeks == []
 
 
 async def test_invalid_message_is_skipped_without_calling_the_service():
-    service = FakeService(FakeTask())
+    service = FakeService(PROCESSED)
 
     consumer = await _handle(service, b"garbage")
 
@@ -90,14 +90,20 @@ async def test_invalid_message_is_skipped_without_calling_the_service():
     assert consumer.commits == [{TP: 42}]
 
 
-async def test_event_for_a_task_that_is_not_pending_is_skipped():
-    conflict = TaskTransitionConflictError(
-        uuid.uuid4(), TaskStatus.PROCESSING, TaskStatus.COMPLETED
-    )
-
-    consumer = await _handle(FakeService(conflict), _event_bytes())
+@pytest.mark.parametrize(
+    "result",
+    [
+        ProcessingResult(Outcome.DUPLICATE, TaskStatus.COMPLETED, 1),
+        ProcessingResult(Outcome.IN_PROGRESS, TaskStatus.PROCESSING, 1),
+        ProcessingResult(Outcome.STALE, TaskStatus.PROCESSING, 2),
+    ],
+    ids=lambda r: r.outcome,
+)
+async def test_harmless_duplicates_are_committed_like_processed_messages(result):
+    consumer = await _handle(FakeService(result), _event_bytes())
 
     assert consumer.commits == [{TP: 42}]
+    assert consumer.seeks == []
 
 
 async def test_event_for_an_unknown_task_is_skipped():

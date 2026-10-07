@@ -6,10 +6,10 @@ Delivery semantics: at-least-once. Auto-commit is off; the offset of a message
 is committed only after its outcome is stored in PostgreSQL. A crash between
 the two means the message is delivered again after restart/rebalance.
 
-Per message, one of three outcomes:
-- processed (COMPLETED or FAILED stored)       -> commit
-- nothing to do (bad message, task not PENDING) -> commit, i.e. skip
-- infrastructure error (e.g. DB down)           -> no commit, seek back, retry later
+Per message:
+- processed, or a harmless duplicate (see ProcessingService.process) -> commit
+- invalid message or unknown task                                   -> commit, i.e. skip
+- infrastructure error (e.g. DB down)          -> no commit, seek back, retry later
 
 Stops on SIGTERM/SIGINT *between* messages (Phase 12 refines shutdown).
 """
@@ -25,9 +25,10 @@ from pydantic import ValidationError
 from app.config import Settings, get_settings
 from app.db import create_engine, create_sessionmaker
 from app.events import TaskQueuedEvent
+from app.failure_lab import crash_point
 from app.kafka import require_topic
-from app.services.processing_service import ProcessingService
-from app.services.task_service import TaskTransitionConflictError, UnknownTaskError
+from app.services.processing_service import Outcome, ProcessingService
+from app.services.task_service import UnknownTaskError
 from app.storage import Storage
 
 log = logging.getLogger("app.worker")
@@ -65,11 +66,9 @@ async def handle(
         log.error("%s: invalid message, skipping: %s", where, exc.errors()[0]["msg"])
     else:
         try:
-            task = await service.process(event)
-            log.info("%s: task %s -> %s", where, task.id, task.status)
-        except (TaskTransitionConflictError, UnknownTaskError) as exc:
-            # The task is not ours to process (already handled, or unknown).
-            log.warning("%s: skipping event %s: %s", where, event.event_id, exc)
+            result = await service.process(event)
+        except UnknownTaskError:
+            log.error("%s: event %s names an unknown task, skipping", where, event.event_id)
         except Exception:
             # Infrastructure failure: the outcome was NOT stored. Do not commit;
             # rewind to this message so it is fetched again after a pause.
@@ -78,7 +77,22 @@ async def handle(
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(stop.wait(), settings.worker_redelivery_delay_s)
             return
+        else:
+            if result.outcome is Outcome.PROCESSED:
+                log.info("%s: task %s -> %s", where, event.task_id, result.task_status)
+            else:
+                # Expected under at-least-once delivery: not an error.
+                log.info(
+                    "%s: event %s is a no-op (%s): task %s is %s, attempt %d",
+                    where,
+                    event.event_id,
+                    result.outcome,
+                    event.task_id,
+                    result.task_status,
+                    result.attempt,
+                )
 
+    crash_point(settings.worker_crash_point, "after_processing")
     # The committed offset is the *next* message to read, hence + 1.
     await consumer.commit({tp: msg.offset + 1})
 

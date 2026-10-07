@@ -5,7 +5,7 @@ A learning project for distributed-systems patterns (transactional outbox,
 idempotent consumers, retries/DLQ, leases, graceful shutdown).
 The phase plan is in [docs/PLAN.md](docs/PLAN.md).
 
-> Status: Phase 06 — transactional outbox: the API writes events to PostgreSQL, a publisher relays them to Kafka.
+> Status: Phase 07 — idempotent processing: duplicates are harmless, stale workers are fenced off.
 
 ## Run (hybrid dev)
 
@@ -101,9 +101,17 @@ message's offset only after the task outcome is stored. Per message:
 processed -> commit; invalid / task not `PENDING` -> skip (commit);
 infrastructure error -> no commit, seek back, retry after a pause.
 
+**Idempotent processing.** Duplicates are expected (Kafka redelivery, outbox
+re-publish), so `ProcessingService.process()` returns an explicit outcome:
+`processed`, `duplicate` (task already finished), `in_progress` (another worker
+holds it) or `stale` (we lost the task mid-way; our result is discarded). Three
+guards: the state machine (only `PENDING` can be claimed), a **fencing token**
+(`complete`/`fail` require the `attempt` returned by `start`, so a previous
+owner can never overwrite the current one), and `UNIQUE(task_results.task_id)`
+as the last line of defense. No inbox table: `task_id` is the natural
+idempotency key. See `experiments/phase07_duplicate_delivery.sh`.
+
 Known flaws, on purpose until later phases:
-- **Duplicates are only rejected by the state machine** (Phase 07 makes
-  processing idempotent explicitly).
 - **Stuck tasks** (Phase 10-11): a worker killed mid-task leaves it in
   `PROCESSING`; the redelivered event is rejected by the state machine
   (`experiments/phase05_kill_consumer.sh`).

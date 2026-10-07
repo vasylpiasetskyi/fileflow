@@ -18,6 +18,11 @@ TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
 }
 
 
+def is_terminal(status: TaskStatus) -> bool:
+    """No transition leads out of this status: the task is done for good."""
+    return not TRANSITIONS[status]
+
+
 def sources_of(new: TaskStatus) -> frozenset[TaskStatus]:
     """All statuses from which `new` may be entered."""
     return frozenset(src for src, targets in TRANSITIONS.items() if new in targets)

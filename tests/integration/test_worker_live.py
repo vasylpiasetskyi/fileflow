@@ -7,14 +7,12 @@ import pytest
 from aiokafka import AIOKafkaProducer, TopicPartition
 from aiokafka.admin import AIOKafkaAdminClient
 from fastapi import FastAPI
-from sqlalchemy import func, select
 
 from app.config import Settings, get_settings
 from app.events import TaskQueuedEvent
 from app.kafka import MissingTopicError
-from app.models import TaskResult, TaskStatus
-from app.services.processing_service import ProcessingService
-from app.services.task_service import TaskTransitionConflictError
+from app.models import TaskStatus
+from app.services.processing_service import Outcome, ProcessingResult, ProcessingService
 from app.worker.__main__ import run
 
 pytestmark = pytest.mark.integration
@@ -65,10 +63,10 @@ async def test_processing_an_event_stores_the_result(app, client):
     content = b"first line\nsecond line here\nthird"
     uploaded = await _upload(client, content)
 
-    task = await _service(app, "worker-a").process(_event(uploaded))
+    result = await _service(app, "worker-a").process(_event(uploaded))
 
-    assert task.status == TaskStatus.COMPLETED
-    body = (await client.get(f"/tasks/{task.id}")).json()
+    assert result == ProcessingResult(Outcome.PROCESSED, TaskStatus.COMPLETED, 1)
+    body = (await client.get(f"/tasks/{uploaded['task']['id']}")).json()
     assert body["attempt"] == 1
     assert body["worker_id"] == "worker-a"
     assert body["result"]["size"] == len(content)
@@ -77,16 +75,8 @@ async def test_processing_an_event_stores_the_result(app, client):
     assert body["result"]["word_count"] == 6
 
 
-async def test_same_event_twice_is_rejected_by_the_state_machine(app, client):
-    uploaded = await _upload(client, b"once")
-    service = _service(app)
-    await service.process(_event(uploaded))
-
-    with pytest.raises(TaskTransitionConflictError):
-        await service.process(_event(uploaded))
-
-    async with app.state.sessionmaker() as session:
-        assert await session.scalar(select(func.count()).select_from(TaskResult)) == 1
+async def _task_error(client, uploaded: dict) -> str:
+    return (await client.get(f"/tasks/{uploaded['task']['id']}")).json()["error"]
 
 
 async def test_tampered_object_fails_the_checksum_check(app, client, s3):
@@ -95,20 +85,20 @@ async def test_tampered_object_fails_the_checksum_check(app, client, s3):
         Bucket=get_settings().s3_bucket, Key=uploaded["file"]["storage_key"], Body=b"tampered"
     )
 
-    task = await _service(app).process(_event(uploaded))
+    result = await _service(app).process(_event(uploaded))
 
-    assert task.status == TaskStatus.FAILED
-    assert task.error.startswith("ChecksumMismatchError")
+    assert result.task_status == TaskStatus.FAILED
+    assert (await _task_error(client, uploaded)).startswith("ChecksumMismatchError")
 
 
 async def test_missing_object_fails_the_task(app, client, s3):
     uploaded = await _upload(client, b"soon gone")
     await s3.delete_object(Bucket=get_settings().s3_bucket, Key=uploaded["file"]["storage_key"])
 
-    task = await _service(app).process(_event(uploaded))
+    result = await _service(app).process(_event(uploaded))
 
-    assert task.status == TaskStatus.FAILED
-    assert task.error.startswith("ObjectNotFoundError")
+    assert result.task_status == TaskStatus.FAILED
+    assert (await _task_error(client, uploaded)).startswith("ObjectNotFoundError")
 
 
 # --- The real worker: Kafka consumer end to end -------------------------------

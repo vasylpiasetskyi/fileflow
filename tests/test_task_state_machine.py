@@ -1,7 +1,7 @@
 import pytest
 
 from app.models import TaskStatus
-from app.task_state_machine import TRANSITIONS, sources_of
+from app.task_state_machine import TRANSITIONS, is_terminal, sources_of
 
 P, R, C, F = TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.COMPLETED, TaskStatus.FAILED
 
@@ -36,3 +36,7 @@ def test_sources_of_inverts_the_table():
     assert sources_of(C) == {R}
     assert sources_of(F) == {R}
     assert sources_of(P) == frozenset()  # nothing re-enters PENDING yet (retries: Phase 08)
+
+
+def test_is_terminal_marks_finished_statuses():
+    assert {s for s in TaskStatus if is_terminal(s)} == {C, F}

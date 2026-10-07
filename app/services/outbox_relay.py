@@ -22,11 +22,11 @@ Failure analysis (the point of this phase):
 import asyncio
 import json
 import logging
-import os
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings
+from app.failure_lab import crash_point
 from app.kafka import EventPublisher
 from app.repositories.outbox_repository import OutboxRepository
 
@@ -51,7 +51,7 @@ class OutboxRelay:
             rows = await repo.claim_pending(self._settings.outbox_batch_size)
             if not rows:
                 return 0, 0
-            self._crash_point("before_publish")
+            crash_point(self._settings.outbox_crash_point, "before_publish")
 
             # Send the whole batch concurrently: the producer groups messages
             # into one request per partition instead of one round trip each.
@@ -74,7 +74,7 @@ class OutboxRelay:
                 for row, r in zip(rows, results, strict=True)
                 if isinstance(r, BaseException)
             ]
-            self._crash_point("after_publish")
+            crash_point(self._settings.outbox_crash_point, "after_publish")
 
             await repo.mark_published(published)
             if errors:
@@ -90,8 +90,3 @@ class OutboxRelay:
                 "%d outbox event(s) not published, will retry: %s", len(errors), errors[0][1]
             )
         return len(published), len(errors)
-
-    def _crash_point(self, point: str) -> None:
-        if self._settings.outbox_crash_point == point:
-            log.critical("FAILURE LAB: crashing at %s", point)
-            os._exit(1)  # no cleanup, no rollback message: like kill -9

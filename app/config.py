@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     worker_redelivery_delay_s: float = 2.0
     # How much of an object the worker reads from storage per iteration.
     processing_read_chunk_bytes: int = 1024 * 1024
+    # FAILURE LAB ONLY. "after_processing": kill the worker after the task
+    # outcome is committed to PostgreSQL but before the Kafka offset is
+    # committed -> the message is redelivered. Empty = never.
+    worker_crash_point: Literal["", "after_processing"] = ""
 
     # Health checks: how long a single dependency probe may take
     health_check_timeout_s: float = 2.0

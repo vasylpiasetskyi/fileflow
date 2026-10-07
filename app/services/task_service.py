@@ -2,8 +2,13 @@
 
 Each method is one short transaction around a guarded UPDATE. When the guard
 rejects a change we read the task once more, outside the decision, only to
-report *why* (missing vs. wrong status) — the decision itself was already made
-atomically by PostgreSQL.
+report *why* (missing, wrong status, other attempt) — the decision itself was
+already made atomically by PostgreSQL.
+
+Fencing: start() returns the task with its new `attempt` number. complete()
+and fail() must present that number and succeed only if the task is still on
+it. A worker that lost the task (e.g. recovered by another worker after its
+lease expired) can therefore never overwrite the new owner's work.
 """
 
 import uuid
@@ -21,13 +26,16 @@ class UnknownTaskError(LookupError):
 
 
 class TaskTransitionConflictError(RuntimeError):
-    """The task's current status does not allow the requested transition."""
+    """The task's current status (or attempt) does not allow the requested transition."""
 
-    def __init__(self, task_id: uuid.UUID, new: TaskStatus, current: TaskStatus) -> None:
-        super().__init__(f"task {task_id}: cannot go {current} -> {new}")
+    def __init__(self, task_id: uuid.UUID, new: TaskStatus, current: Task) -> None:
+        super().__init__(
+            f"task {task_id}: cannot go {current.status} (attempt {current.attempt}) -> {new}"
+        )
         self.task_id = task_id
         self.new = new
-        self.current = current
+        self.current = current.status
+        self.current_attempt = current.attempt
 
 
 class TaskService:
@@ -56,11 +64,19 @@ class TaskService:
             finished_at=None,
         )
 
-    async def complete(self, task_id: uuid.UUID, stats: FileStats, processing_ms: int) -> Task:
-        """PROCESSING -> COMPLETED and store the result, in one transaction."""
+    async def complete(
+        self, task_id: uuid.UUID, attempt: int, stats: FileStats, processing_ms: int
+    ) -> Task:
+        """PROCESSING -> COMPLETED and store the result, in one transaction.
+
+        Only for the owner of `attempt`; the result row is inserted only if
+        the guarded transition succeeded.
+        """
         async with self._sessionmaker.begin() as session:
             repo = TaskRepository(session)
-            task = await repo.transition(task_id, TaskStatus.COMPLETED, finished_at=func.now())
+            task = await repo.transition(
+                task_id, TaskStatus.COMPLETED, expected_attempt=attempt, finished_at=func.now()
+            )
             if task is not None:
                 repo.add_result(
                     TaskResult(
@@ -76,9 +92,14 @@ class TaskService:
             raise await self._conflict(task_id, TaskStatus.COMPLETED)
         return task
 
-    async def fail(self, task_id: uuid.UUID, error: str) -> Task:
+    async def fail(self, task_id: uuid.UUID, attempt: int, error: str) -> Task:
+        """PROCESSING -> FAILED, only for the owner of `attempt`."""
         return await self._transition(
-            task_id, TaskStatus.FAILED, error=error, finished_at=func.now()
+            task_id,
+            TaskStatus.FAILED,
+            expected_attempt=attempt,
+            error=error,
+            finished_at=func.now(),
         )
 
     async def _transition(self, task_id: uuid.UUID, new: TaskStatus, **values: object) -> Task:
@@ -90,4 +111,4 @@ class TaskService:
 
     async def _conflict(self, task_id: uuid.UUID, new: TaskStatus) -> TaskTransitionConflictError:
         current = await self.get(task_id)  # raises UnknownTaskError if missing
-        return TaskTransitionConflictError(task_id, new, current.status)
+        return TaskTransitionConflictError(task_id, new, current)

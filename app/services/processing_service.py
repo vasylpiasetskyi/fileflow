@@ -1,26 +1,55 @@
-"""Processing use case: claim the task named by an event, analyze its file, record the outcome."""
+"""Processing use case: claim the task named by an event, analyze its file, record the outcome.
 
+Idempotency. Kafka delivers at least once and the outbox may publish twice, so
+the same TaskQueuedEvent can arrive again — after the task completed, or while
+another worker still processes it. process() turns every such case into an
+explicit, harmless Outcome instead of an error. Three mechanisms make that safe:
+
+1. state machine: only a PENDING task can be claimed (start);
+2. fencing token: only the owner of the current attempt may finish it;
+3. UNIQUE(task_results.task_id): even a bug in 1-2 cannot store two results.
+
+The natural idempotency key is task_id, so no separate "processed event ids"
+(inbox) table is needed.
+"""
+
+import enum
 import logging
 import time
-import uuid
 from contextlib import aclosing
+from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings
 from app.events import TaskQueuedEvent
-from app.models import Task
+from app.models import Task, TaskStatus
 from app.processing import analyze
 from app.repositories.file_repository import FileRepository
 from app.services.file_service import UnknownFileError
-from app.services.task_service import TaskService
+from app.services.task_service import TaskService, TaskTransitionConflictError
 from app.storage import Storage
+from app.task_state_machine import is_terminal
 
 log = logging.getLogger(__name__)
 
 
 class ChecksumMismatchError(Exception):
     """Stored bytes differ from what was uploaded."""
+
+
+class Outcome(enum.StrEnum):
+    PROCESSED = "processed"  # we claimed the task and stored COMPLETED or FAILED
+    DUPLICATE = "duplicate"  # task already finished earlier: nothing to do
+    IN_PROGRESS = "in_progress"  # another worker holds the task right now
+    STALE = "stale"  # we lost the task while processing; our result was discarded
+
+
+@dataclass(frozen=True)
+class ProcessingResult:
+    outcome: Outcome
+    task_status: TaskStatus
+    attempt: int
 
 
 class ProcessingService:
@@ -35,19 +64,31 @@ class ProcessingService:
         self._storage = storage
         self._settings = settings
 
-    async def process(self, event: TaskQueuedEvent) -> Task:
-        """Claim the event's task and process it.
+    async def process(self, event: TaskQueuedEvent) -> ProcessingResult:
+        """Claim the event's task and process it, or explain why not.
 
-        Raises TaskTransitionConflictError if the task is no longer PENDING
-        (e.g. the same event delivered twice) and UnknownTaskError if it does
-        not exist; the caller decides what that means for the message.
+        Raises UnknownTaskError if the task does not exist (an invalid
+        message) and infrastructure errors (e.g. database down).
         """
-        task = await self._tasks.start(event.task_id, self._settings.worker_id)
-        # The database, not the message, is the source of truth for the file.
-        return await self._process(task.id, task.file_id)
+        try:
+            task = await self._tasks.start(event.task_id, self._settings.worker_id)
+        except TaskTransitionConflictError as exc:
+            outcome = Outcome.DUPLICATE if is_terminal(exc.current) else Outcome.IN_PROGRESS
+            return ProcessingResult(outcome, exc.current, exc.current_attempt)
 
-    async def _process(self, task_id: uuid.UUID, file_id: uuid.UUID) -> Task:
-        log.info("task %s: processing file %s", task_id, file_id)
+        # The database, not the message, is the source of truth for the file.
+        try:
+            finished = await self._process(task)
+        except TaskTransitionConflictError as exc:
+            # Our fencing token (attempt) no longer matches: someone else owns
+            # the task now. Our work is thrown away, theirs stays intact.
+            log.warning("task %s: lost ownership of attempt %d: %s", task.id, task.attempt, exc)
+            return ProcessingResult(Outcome.STALE, exc.current, exc.current_attempt)
+        return ProcessingResult(Outcome.PROCESSED, finished.status, finished.attempt)
+
+    async def _process(self, task: Task) -> Task:
+        task_id, file_id = task.id, task.file_id
+        log.info("task %s: attempt %d, processing file %s", task_id, task.attempt, file_id)
         started = time.perf_counter()
         try:
             async with self._sessionmaker() as session:
@@ -67,8 +108,8 @@ class ProcessingService:
             # Every failure is final for now; Phase 08 splits retryable from permanent.
             error = f"{type(exc).__name__}: {exc}"
             log.warning("task %s: failed: %s", task_id, error)
-            return await self._tasks.fail(task_id, error)
+            return await self._tasks.fail(task_id, task.attempt, error)
 
         processing_ms = round((time.perf_counter() - started) * 1000)
         log.info("task %s: completed in %d ms (%d bytes)", task_id, processing_ms, stats.size)
-        return await self._tasks.complete(task_id, stats, processing_ms)
+        return await self._tasks.complete(task_id, task.attempt, stats, processing_ms)
