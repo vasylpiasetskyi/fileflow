@@ -35,7 +35,7 @@ class UploadOut(BaseModel):
     task: TaskOut
 
 
-async def _read_chunks(upload: UploadFile, chunk_size: int) -> AsyncIterator[bytes]:
+async def read_upload_chunks(upload: UploadFile, chunk_size: int) -> AsyncIterator[bytes]:
     # Starlette has already spooled the multipart body to a temp file (in
     # memory up to 1 MiB, then on disk). We read it back in bounded chunks and
     # never call `upload.read()` without a size.
@@ -80,7 +80,7 @@ async def upload_file(
         service,
         file.filename,
         file.content_type or "application/octet-stream",
-        _read_chunks(file, settings.upload_read_chunk_bytes),
+        read_upload_chunks(file, settings.upload_read_chunk_bytes),
     )
 
 

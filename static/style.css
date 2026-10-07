@@ -1,9 +1,31 @@
 :root {
-  --bg: #fafafa;
-  --fg: #1d1d1f;
-  --muted: #6e6e73;
-  --border: #d2d2d7;
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --fg: #1d1f23;
+  --muted: #6b7079;
+  --border: #dde0e5;
   --accent: #0b63ce;
+  --ok: #1a7f37;
+  --warn: #9a6700;
+  --bad: #c62828;
+  --info: #0b63ce;
+  --idle: #6b7079;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #121417;
+    --surface: #1b1e23;
+    --fg: #e6e8eb;
+    --muted: #9aa0a9;
+    --border: #2d3138;
+    --accent: #5aa2ff;
+    --ok: #4cc06a;
+    --warn: #e0b341;
+    --bad: #ff6b6b;
+    --info: #5aa2ff;
+    --idle: #9aa0a9;
+  }
 }
 
 * { box-sizing: border-box; }
@@ -12,25 +34,87 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--fg);
-  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
 header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
   padding: 12px 24px;
   border-bottom: 1px solid var(--border);
-  background: #fff;
+  background: var(--surface);
 }
 
-.brand { font-weight: 600; color: var(--fg); text-decoration: none; }
+.brand { font-weight: 600; color: var(--fg); text-decoration: none; margin-right: auto; }
 
-main { max-width: 960px; margin: 0 auto; padding: 24px; }
+main { max-width: 1200px; margin: 0 auto; padding: 24px; display: grid; gap: 16px; }
+
+h2 { font-size: 16px; margin: 0 0 12px; }
+h3 { font-size: 14px; margin: 16px 0 8px; }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  min-width: 0;
+}
+
+.layout { display: grid; grid-template-columns: 3fr 2fr; gap: 16px; align-items: start; }
+@media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+/* Keep the details next to the row you clicked while scrolling a long table. */
+@media (min-width: 901px) { #detail { position: sticky; top: 16px; } }
+
+.section-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
 
 .muted { color: var(--muted); }
+.small { font-size: 12px; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.wrap { overflow-wrap: anywhere; }
 
-pre {
-  background: #fff;
-  border: 1px solid var(--border);
+.upload { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+button {
+  font: inherit;
+  padding: 6px 14px;
+  border: 1px solid var(--accent);
   border-radius: 6px;
-  padding: 12px;
-  overflow-x: auto;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
 }
+button[disabled] { opacity: 0.6; cursor: progress; }
+
+select { font: inherit; padding: 2px 6px; background: var(--surface); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 6px; }
+
+.notice { margin: 12px 0 0; padding: 8px 12px; border-left: 3px solid var(--ok); background: var(--bg); }
+.notice.error, .error { color: var(--bad); }
+.notice.error { border-left-color: var(--bad); }
+
+table.tasks { width: 100%; border-collapse: collapse; }
+.tasks th { text-align: left; font-weight: 500; color: var(--muted); padding: 6px 8px;
+  border-bottom: 1px solid var(--border); }
+.tasks td { padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.tasks tbody tr { cursor: pointer; }
+.tasks tbody tr:hover, .tasks tbody tr:focus { background: var(--bg); outline: none; }
+.tasks td:first-child { white-space: normal; overflow-wrap: anywhere; }
+#tasks { overflow-x: auto; }
+
+.badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px;
+  font-weight: 500; border: 1px solid currentColor; }
+.badge.completed { color: var(--ok); }
+.badge.failed { color: var(--bad); }
+.badge.retry { color: var(--warn); }
+.badge.processing { color: var(--info); }
+.badge.pending { color: var(--idle); }
+
+dl.detail { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; }
+dl.detail dt { color: var(--muted); }
+dl.detail dd { margin: 0; min-width: 0; }
+
+.dep { display: inline-flex; align-items: center; gap: 6px; margin-left: 12px; font-size: 13px; }
+.dep .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+.dep.down { color: var(--bad); }
+.dep.down .dot { background: var(--bad); }

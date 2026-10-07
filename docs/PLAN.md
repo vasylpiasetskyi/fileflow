@@ -46,27 +46,28 @@ if it adds value).
 | 08 | Retries | error classification; `PROCESSING → RETRY → PENDING`; exp. backoff + jitter (`next_attempt_at`, DB clock); `recovery` process requeues via outbox | MinIO down → retries then gave up / recovers; binary file → no retry (Failure Lab 5) |
 | 09 | DLQ | `DeadLetter` (task_failed / invalid_message / unknown_task); FAILED + dead letter in one tx (outbox); rejected messages published before offset commit; per-task `max_attempts`; `python -m app.dlq list / redrive` | binary file, poison message, give-up + redrive → COMPLETED (Failure Lab 7) |
 | 11 | Large files | `POST /files/stream` (raw body via `request.stream()` → hash → S3 multipart, no temp file); `max_upload_bytes` enforced while streaming (+ early 413 on `Content-Length`); any intake error → multipart aborted + file `FAILED`; `GET /health/live` | 1 GiB: stream ~1.6× faster, no temp disk; multipart's ~1.2 GiB "memory" is page cache charged to the cgroup (RSS 180 MiB); event-loop blocking ~10 ms p99; whole-file analysis ~9.9 GiB RSS vs ~45 MiB streaming |
+| 14 | Minimal UI | one page (Jinja2 + HTMX): dependency badges, multipart upload, task table (status filter, one joined query), details with error/result, Redrive for FAILED; polling (table every 2 s, details until finished) + `HX-Trigger: tasks-changed`; UI errors as 200 fragments | checked in a real browser; the table surfaces the known gaps: a task stuck in `PROCESSING` since the phase 05 `kill -9`, and phase 05 dual-write orphans in `PENDING` |
 
-## Remaining (revised)
+## Remaining
 
-The original phases 10–19 were merged where they only make sense together:
-14+18 (concurrency and benchmark are one experiment), 17+19 (most Failure Lab
-scenarios already exist as `experiments/`). Observability moves before the
-benchmark, so there is something to measure with. Leases / recovery /
-graceful shutdown (10–12) are deferred, see below. Numbering of the remaining
-phases is kept (11–15).
+Nothing: the project stops after phase 14. Everything else is in the next section.
+
+## Deferred (perspective, not implemented)
+
+Decided on 2026-10-08: after phase 14 (minimal UI) the project stops here;
+the phases below stay as a documented perspective.
+
+### Observability, benchmark, Failure Lab write-up
 
 | #  | Phase | Key content | Learn |
 |----|-------|-------------|-------|
 | 12 | Observability | JSON logs with correlation ids (request_id, event_id, task_id, file_id, worker_id, attempt) propagated API → outbox → Kafka → worker; Prometheus metrics: files_uploaded_total, tasks_completed/failed/retried_total, processing_duration, queue_latency, outbox lag, DLQ size, active_tasks. Grafana optional | correlation ids, metrics vs logs, debugging distributed flows |
 | 13 | Concurrency + benchmark | 1 / 4 / 8 workers (and partitions), 100 files; throughput, avg / p95 latency, queue latency, CPU, memory → report table; find the bottleneck | throughput vs latency, horizontal scaling, diminishing returns, bottleneck analysis |
-| 14 | Minimal UI | one page: upload, task table (file, status, attempt, time), task details (worker, error, result); HTMX polling; no SPA | just enough to see async processing and failures |
 | 15 | Failure Lab + documentation | add the missing scenario 6 (PostgreSQL unavailable); one document with every experiment and its observed result; README: architecture diagram, guarantees, trade-offs; close the backlog below | explaining and defending the design |
 
-## Deferred (perspective, not implemented)
+### Leases, heartbeat, crash recovery, graceful shutdown
 
-**Leases, heartbeat, crash recovery, graceful shutdown** (originally phases
-10–12). Decided on 2026-10-07 to leave this as a documented perspective.
+Originally phases 10–12, deferred on 2026-10-07.
 
 What it would add: `lease_until` set on `start()` and extended by a heartbeat
 task while a worker processes; `recovery` moving `PROCESSING AND lease_until <
@@ -94,11 +95,11 @@ tests that simulate recovery with SQL.
 | 3 | Duplicate message → one result | ✅ `experiments/phase07_duplicate_delivery.sh` |
 | 4 | Crash after Kafka publish → duplicate event → one result | ✅ `experiments/phase06_publisher_crash.sh` |
 | 5 | MinIO unavailable → retry | ✅ `experiments/phase08_retries.sh` |
-| 6 | PostgreSQL unavailable → tx failure, no inconsistent state | ⏳ phase 15 |
+| 6 | PostgreSQL unavailable → tx failure, no inconsistent state | ⏸ deferred |
 | 7 | Corrupted / unsupported file → `FAILED` → DLQ | ✅ `experiments/phase09_dlq.sh` |
 | 8 | Outbox publisher crash before / after publish | ✅ `experiments/phase06_publisher_crash.sh` |
 
-## Backlog (small fixes, close by phase 15)
+## Backlog (small fixes, open)
 
 - `/health` of the API still probes Kafka, which the API no longer needs
   (an outage would mark a working API unhealthy). `/health/live` exists since

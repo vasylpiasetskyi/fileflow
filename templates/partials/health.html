@@ -1,0 +1,5 @@
+{% for name, check in checks.items() %}
+  <span class="dep {{ check.status }}" title="{{ check.error or (check.latency_ms ~ ' ms') }}">
+    <span class="dot"></span>{{ name }}
+  </span>
+{% endfor %}

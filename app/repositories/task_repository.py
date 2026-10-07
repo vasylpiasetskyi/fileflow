@@ -1,13 +1,24 @@
 """SQL for the `tasks` and `task_results` tables. Never commits; see FileRepository."""
 
 import uuid
+from dataclasses import dataclass
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Task, TaskResult, TaskStatus
+from app.models import File, Task, TaskResult, TaskStatus
 from app.repositories.guarded_update import transition_status
 from app.task_state_machine import sources_of
+
+
+@dataclass(frozen=True)
+class TaskOverview:
+    """One row of the task list: the task plus what a list needs from its file and result."""
+
+    task: Task
+    filename: str
+    file_size: int | None
+    processing_ms: int | None
 
 
 class TaskRepository:
@@ -47,6 +58,23 @@ class TaskRepository:
             where=where,
             **values,
         )
+
+    async def list_recent(self, limit: int, status: TaskStatus | None = None) -> list[TaskOverview]:
+        """Newest tasks first, joined with their file and result in ONE query.
+
+        Loading tasks and then each task's file separately would be N+1 queries
+        for a page of N rows.
+        """
+        stmt = (
+            select(Task, File.filename, File.size, TaskResult.processing_ms)
+            .join(File, File.id == Task.file_id)
+            .outerjoin(TaskResult, TaskResult.task_id == Task.id)
+            .order_by(Task.created_at.desc())
+            .limit(limit)
+        )
+        if status is not None:
+            stmt = stmt.where(Task.status == status)
+        return [TaskOverview(*row) for row in (await self._session.execute(stmt)).all()]
 
     async def lock_due_retries(self, limit: int) -> list[Task]:
         """Lock up to `limit` RETRY tasks whose next_attempt_at has passed.

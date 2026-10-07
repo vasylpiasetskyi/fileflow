@@ -38,6 +38,12 @@ async def _run_probe(probe: Probe) -> CheckResult:
     return CheckResult(status="up", latency_ms=round((time.perf_counter() - started) * 1000, 1))
 
 
+async def check_all(probes: dict[str, Probe]) -> dict[str, CheckResult]:
+    """Run every probe concurrently: total latency ~= the slowest probe, not the sum."""
+    results = await asyncio.gather(*(_run_probe(p) for p in probes.values()))
+    return dict(zip(probes.keys(), results, strict=True))
+
+
 @router.get("/health/live")
 async def live() -> dict[str, str]:
     """Liveness: the process runs and its event loop answers. No dependency checks.
@@ -52,9 +58,7 @@ async def health(
     response: Response,
     probes: Annotated[dict[str, Probe], Depends(get_health_probes)],
 ) -> HealthResponse:
-    # Probes run concurrently: total latency ~= the slowest probe, not the sum.
-    results = await asyncio.gather(*(_run_probe(p) for p in probes.values()))
-    checks = dict(zip(probes.keys(), results, strict=True))
+    checks = await check_all(probes)
 
     healthy = all(c.status == "up" for c in checks.values())
     if not healthy:

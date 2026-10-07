@@ -1,0 +1,9 @@
+{% if error %}
+  <p class="notice error">{{ error }}</p>
+{% else %}
+  <p class="notice">
+    <strong>{{ result.file.filename }}</strong> uploaded — task
+    <a href="#" hx-get="/ui/tasks/{{ result.task.id }}" hx-target="#detail">{{ result.task.id }}</a>
+    queued.
+  </p>
+{% endif %}

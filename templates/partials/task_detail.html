@@ -1,0 +1,32 @@
+<h2>Details</h2>
+{# While the task can still change, re-fetch this panel every 2 s; a finished task stops polling. #}
+{% if task.status.value not in ("COMPLETED", "FAILED") %}
+  <div hx-get="/ui/tasks/{{ task.id }}" hx-trigger="every 2s" hx-target="#detail"></div>
+{% endif %}
+{% if message %}<p class="notice">{{ message }}</p>{% endif %}
+<dl class="detail">
+  <dt>File</dt><dd>{{ file.filename }} <span class="muted">{{ size }}, {{ file.content_type }}</span></dd>
+  <dt>Status</dt><dd><span class="badge {{ task.status.value | lower }}">{{ task.status.value }}</span></dd>
+  <dt>Attempt</dt><dd>{{ task.attempt }} of {{ task.max_attempts }}</dd>
+  <dt>Worker</dt><dd class="mono">{{ task.worker_id or "—" }}</dd>
+  <dt>Created</dt><dd>{{ task.created_at.strftime("%Y-%m-%d %H:%M:%S") }}</dd>
+  {% if task.started_at %}<dt>Started</dt><dd>{{ task.started_at.strftime("%H:%M:%S") }}</dd>{% endif %}
+  {% if task.finished_at %}<dt>Finished</dt><dd>{{ task.finished_at.strftime("%H:%M:%S") }}</dd>{% endif %}
+  {% if task.next_attempt_at %}<dt>Next attempt</dt><dd>{{ task.next_attempt_at.strftime("%H:%M:%S") }}</dd>{% endif %}
+  {% if task.error %}<dt>Error</dt><dd class="error">{{ task.error }}</dd>{% endif %}
+</dl>
+{% if result %}
+<h3>Result</h3>
+<dl class="detail">
+  <dt>Size</dt><dd>{{ result.size }} bytes</dd>
+  <dt>Lines</dt><dd>{{ result.line_count }}</dd>
+  <dt>Words</dt><dd>{{ result.word_count }}</dd>
+  <dt>SHA-256</dt><dd class="mono wrap">{{ result.sha256 }}</dd>
+  <dt>Processing</dt><dd>{{ result.processing_ms }} ms</dd>
+</dl>
+{% endif %}
+<p class="muted mono small">task {{ task.id }}</p>
+{% if task.status.value == "FAILED" %}
+  <button hx-post="/ui/tasks/{{ task.id }}/redrive" hx-target="#detail"
+          hx-confirm="Send this task back for processing?">Redrive</button>
+{% endif %}

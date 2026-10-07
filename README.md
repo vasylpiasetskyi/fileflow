@@ -5,7 +5,7 @@ A learning project for distributed-systems patterns (transactional outbox,
 idempotent consumers, retries/DLQ, leases, graceful shutdown).
 The phase plan is in [docs/PLAN.md](docs/PLAN.md).
 
-> Status: Phase 11 — large files: end-to-end streaming upload, size limits, measured memory/throughput.
+> Status: done (phases 01–09, 11, 14). Leases/recovery, observability, benchmark and the Failure Lab write-up are a documented perspective — see `docs/PLAN.md`.
 
 ## Run (hybrid dev)
 
@@ -19,7 +19,7 @@ uv run uvicorn app.api.main:app --reload
 uv run python -m app.outbox          # another terminal: relays outbox -> Kafka
 uv run python -m app.worker          # another terminal: Kafka consumer
 uv run python -m app.recovery        # another terminal: requeues due retries
-open http://localhost:8000           # UI
+open http://localhost:8000           # UI: upload, live task table, details, redrive
 curl localhost:8000/health
 ```
 
@@ -173,6 +173,15 @@ not worth moving to a thread. Processing 1 GiB in the worker: ~6.5 s with a
 flat ~90 MiB. Reading the whole file into memory before analysis peaks at
 **~9.9 GiB RSS** for a 1 GiB file (`bytes.split()` materializes every word);
 streaming stays at ~45 MiB, and 64 KiB chunks were the fastest.
+
+**UI** (`/`, Jinja2 + HTMX, no SPA). The server renders HTML fragments from
+the same services the REST API uses (`app/api/routes/ui.py`): dependency
+badges, a multipart upload form, the task table (newest first, status filter,
+one joined query — no N+1), task details with error and result, and a
+**Redrive** button for `FAILED` tasks. The table polls every 2 s and refreshes
+at once when a response carries `HX-Trigger: tasks-changed`; an open detail
+panel polls until its task is finished. UI routes answer expected errors with
+200 + a message, because HTMX does not swap 4xx/5xx responses.
 
 Known flaws, accepted:
 - **Stuck tasks**: a worker killed mid-task leaves it in `PROCESSING`; the

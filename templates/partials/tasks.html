@@ -1,0 +1,20 @@
+{% if not rows %}
+  <p class="muted">No tasks yet. Upload a file.</p>
+{% else %}
+<table class="tasks">
+  <thead>
+    <tr><th>File</th><th>Status</th><th>Attempt</th><th>Worker</th><th>Time</th></tr>
+  </thead>
+  <tbody>
+  {% for item in rows %}{% set t = item.row.task %}
+    <tr hx-get="/ui/tasks/{{ t.id }}" hx-target="#detail" tabindex="0">
+      <td>{{ item.row.filename }} <span class="muted">{{ item.size }}</span></td>
+      <td><span class="badge {{ t.status.value | lower }}">{{ t.status.value }}</span></td>
+      <td>{{ t.attempt }}/{{ t.max_attempts }}</td>
+      <td class="mono">{{ t.worker_id or "—" }}</td>
+      <td>{{ item.time }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}

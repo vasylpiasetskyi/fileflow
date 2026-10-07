@@ -1,8 +1,40 @@
 {% extends "base.html" %}
+{% block header_extra %}
+  <span id="health" hx-get="/ui/health" hx-trigger="load, every 5s"></span>
+{% endblock %}
 {% block content %}
-<section>
-  <h2>System health</h2>
-  <p class="muted">Live view of <code>GET /health</code>, refreshed every 3 seconds.</p>
-  <pre hx-get="/health" hx-trigger="load, every 3s" hx-swap="innerHTML">loading…</pre>
+<section class="card">
+  <h2>Upload</h2>
+  <form hx-post="/ui/files" hx-encoding="multipart/form-data" hx-target="#upload-result"
+        hx-disabled-elt="find button" class="upload">
+    <input type="file" name="file" required>
+    <button type="submit">Upload</button>
+  </form>
+  <div id="upload-result" aria-live="polite"></div>
 </section>
+
+<div class="layout">
+  <section class="card">
+    <div class="section-head">
+      <h2>Tasks</h2>
+      <label class="muted">Status
+        <select name="status" hx-get="/ui/tasks" hx-target="#tasks" hx-trigger="change">
+          <option value="">All</option>
+          {% for s in statuses %}<option value="{{ s.value }}">{{ s.value }}</option>{% endfor %}
+        </select>
+      </label>
+    </div>
+    {# Polls every 2 s, and refreshes at once when a response says HX-Trigger: tasks-changed.
+       hx-include keeps the chosen status filter on every poll. #}
+    <div id="tasks" hx-get="/ui/tasks" hx-trigger="load, every 2s, tasks-changed from:body"
+         hx-include="[name='status']">
+      <p class="muted">Loading…</p>
+    </div>
+  </section>
+
+  <section class="card" id="detail">
+    <h2>Details</h2>
+    <p class="muted">Select a task.</p>
+  </section>
+</div>
 {% endblock %}

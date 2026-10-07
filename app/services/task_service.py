@@ -26,7 +26,7 @@ from app.events import DeadLetter, DeadLetterKind, TaskQueuedEvent
 from app.models import Task, TaskResult, TaskStatus
 from app.processing import FileStats
 from app.repositories.outbox_repository import OutboxRepository
-from app.repositories.task_repository import TaskRepository
+from app.repositories.task_repository import TaskOverview, TaskRepository
 
 
 class UnknownTaskError(LookupError):
@@ -57,6 +57,12 @@ class TaskService:
         if task is None:
             raise UnknownTaskError(task_id)
         return task
+
+    async def list_recent(
+        self, limit: int = 50, status: TaskStatus | None = None
+    ) -> list[TaskOverview]:
+        async with self._sessionmaker() as session:
+            return await TaskRepository(session).list_recent(limit, status)
 
     async def get_result(self, task_id: uuid.UUID) -> TaskResult | None:
         async with self._sessionmaker() as session:
