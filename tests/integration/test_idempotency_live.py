@@ -79,7 +79,7 @@ async def test_concurrent_copies_of_one_event_produce_one_result(app, client):
 async def test_stale_owner_cannot_finish_a_task_it_lost(app, client):
     """The fencing token, step by step with TaskService."""
     event = await _upload(client)
-    tasks = TaskService(app.state.sessionmaker)
+    tasks = TaskService(app.state.sessionmaker, get_settings())
 
     a = await tasks.start(event.task_id, "worker-a")  # attempt 1
     await _simulate_recovery(app, event.task_id)  # A's lease "expired"
@@ -102,7 +102,7 @@ async def test_worker_that_loses_its_task_mid_processing_reports_stale(
     B has claimed the task (PROCESSING, attempt 2) but not finished it when
     A, the previous owner, tries to finish. Only the attempt tells them apart."""
     event = await _upload(client)
-    tasks = TaskService(app.state.sessionmaker)
+    tasks = TaskService(app.state.sessionmaker, get_settings())
     real_analyze = processing_service.analyze
     b_claims = []
 
@@ -129,7 +129,7 @@ async def test_worker_that_loses_its_task_mid_processing_reports_stale(
 async def test_unique_task_id_is_the_last_line_of_defense(app, client):
     """Even if the guards above had a bug, PostgreSQL refuses a second result."""
     event = await _upload(client)
-    tasks = TaskService(app.state.sessionmaker)
+    tasks = TaskService(app.state.sessionmaker, get_settings())
     task = await tasks.start(event.task_id, "w")
     await tasks.complete(event.task_id, task.attempt, STATS, processing_ms=1)
 

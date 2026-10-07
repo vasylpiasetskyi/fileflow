@@ -20,6 +20,7 @@ x-app-env: &app-env
   # Single source for the topic name in compose; kafka-init creates the same one.
   # (Hybrid dev uses the default in app/config.py — keep them equal.)
   FILEFLOW_KAFKA_TOPIC: ${FILEFLOW_KAFKA_TOPIC:-file-processing}
+  FILEFLOW_KAFKA_DLQ_TOPIC: ${FILEFLOW_KAFKA_DLQ_TOPIC:-file-processing-dlq}
   # Retry policy; override from the shell for fast experiments, e.g.
   #   FILEFLOW_RETRY_BASE_DELAY_S=2 FILEFLOW_RETRY_BACKOFF_FACTOR=2 docker compose --profile app up -d
   FILEFLOW_TASK_MAX_ATTEMPTS: ${FILEFLOW_TASK_MAX_ATTEMPTS:-5}
@@ -108,10 +109,16 @@ services:
     image: apache/kafka:3.8.0
     depends_on:
       kafka: { condition: service_healthy }
+    # Both the work topic and its dead letter queue.
     entrypoint: >
+      /bin/sh -c "
       /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092
       --create --if-not-exists --topic ${FILEFLOW_KAFKA_TOPIC:-file-processing}
+      --partitions 1 --replication-factor 1 &&
+      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092
+      --create --if-not-exists --topic ${FILEFLOW_KAFKA_DLQ_TOPIC:-file-processing-dlq}
       --partitions 1 --replication-factor 1
+      "
     restart: "no"
 
   # One-shot: apply DB migrations, then exit. App processes start only after

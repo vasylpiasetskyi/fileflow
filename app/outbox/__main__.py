@@ -15,7 +15,7 @@ import signal
 
 from app.config import Settings, get_settings
 from app.db import create_engine, create_sessionmaker
-from app.kafka import EventPublisher, require_topic
+from app.kafka import EventPublisher, require_topics
 from app.services.outbox_relay import OutboxRelay
 
 log = logging.getLogger("app.outbox")
@@ -27,7 +27,8 @@ async def run(settings: Settings, stop: asyncio.Event) -> None:
     try:
         # Exits if Kafka is unreachable at startup; the supervisor restarts us.
         # Once running, Kafka outages are survived: rows simply stay PENDING.
-        await require_topic(settings)
+        # The outbox carries both task events and dead letters.
+        await require_topics(settings, settings.kafka_topic, settings.kafka_dlq_topic)
         await publisher.start()
         relay = OutboxRelay(create_sessionmaker(engine), publisher, settings)
         log.info("outbox publisher started")

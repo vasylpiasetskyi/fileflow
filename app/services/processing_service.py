@@ -62,7 +62,7 @@ class ProcessingService:
         settings: Settings,
     ) -> None:
         self._sessionmaker = sessionmaker
-        self._tasks = TaskService(sessionmaker)
+        self._tasks = TaskService(sessionmaker, settings)
         self._storage = storage
         self._settings = settings
 
@@ -123,7 +123,7 @@ class ProcessingService:
         kind = classify(exc)
         settings = self._settings
 
-        if kind is ErrorKind.RETRYABLE and task.attempt < settings.task_max_attempts:
+        if kind is ErrorKind.RETRYABLE and task.attempt < task.max_attempts:
             delay = backoff_delay(
                 task.attempt,
                 base_s=settings.retry_base_delay_s,
@@ -135,7 +135,7 @@ class ProcessingService:
                 "task %s: attempt %d/%d failed (%s), retry in %.1fs: %s",
                 task.id,
                 task.attempt,
-                settings.task_max_attempts,
+                task.max_attempts,
                 kind,
                 delay,
                 error,

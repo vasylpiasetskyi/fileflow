@@ -42,3 +42,11 @@ def test_sources_of_inverts_the_table():
 
 def test_is_terminal_marks_finished_statuses():
     assert {s for s in TaskStatus if is_terminal(s)} == {C, F}
+
+
+def test_redrive_is_a_manual_transition_only():
+    # The pipeline never leaves FAILED on its own...
+    assert is_terminal(F)
+    assert F not in sources_of(P)
+    # ...but an operator may send it back.
+    assert sources_of(P, manual=True) == {RT, F}

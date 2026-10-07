@@ -9,6 +9,10 @@ Fencing: start() returns the task with its new `attempt` number. complete()
 and fail() must present that number and succeed only if the task is still on
 it. A worker that lost the task (e.g. recovered by another worker after its
 lease expired) can therefore never overwrite the new owner's work.
+
+Dead letters: fail() writes the DLQ message to the outbox in the same
+transaction as FAILED — a failed task always gets its dead letter, and a dead
+letter always describes a task that really failed.
 """
 
 import uuid
@@ -17,8 +21,11 @@ from datetime import timedelta
 from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.config import Settings
+from app.events import DeadLetter, DeadLetterKind, TaskQueuedEvent
 from app.models import Task, TaskResult, TaskStatus
 from app.processing import FileStats
+from app.repositories.outbox_repository import OutboxRepository
 from app.repositories.task_repository import TaskRepository
 
 
@@ -40,8 +47,9 @@ class TaskTransitionConflictError(RuntimeError):
 
 
 class TaskService:
-    def __init__(self, sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(self, sessionmaker: async_sessionmaker[AsyncSession], settings: Settings) -> None:
         self._sessionmaker = sessionmaker
+        self._settings = settings
 
     async def get(self, task_id: uuid.UUID) -> Task:
         async with self._sessionmaker() as session:
@@ -99,14 +107,55 @@ class TaskService:
         return task
 
     async def fail(self, task_id: uuid.UUID, attempt: int, error: str) -> Task:
-        """PROCESSING -> FAILED, only for the owner of `attempt`."""
-        return await self._transition(
-            task_id,
-            TaskStatus.FAILED,
-            expected_attempt=attempt,
-            error=error,
-            finished_at=func.now(),
-        )
+        """PROCESSING -> FAILED plus its dead letter, atomically; owner of `attempt` only."""
+        async with self._sessionmaker.begin() as session:
+            task = await TaskRepository(session).transition(
+                task_id,
+                TaskStatus.FAILED,
+                expected_attempt=attempt,
+                error=error,
+                finished_at=func.now(),
+            )
+            if task is not None:
+                OutboxRepository(session).add(
+                    self._settings.kafka_dlq_topic,
+                    DeadLetter(
+                        kind=DeadLetterKind.TASK_FAILED,
+                        task_id=task.id,
+                        file_id=task.file_id,
+                        attempt=task.attempt,
+                        error=error,
+                        failed_at=task.finished_at,  # database clock, from RETURNING
+                    ),
+                )
+        if task is None:
+            raise await self._conflict(task_id, TaskStatus.FAILED)
+        return task
+
+    async def redrive(self, task_id: uuid.UUID) -> Task:
+        """Operator action: FAILED -> PENDING with a fresh attempt budget, plus a new event.
+
+        `attempt` is NOT reset — it is the fencing token and must only grow.
+        Instead the budget is extended: max_attempts = attempt + task_max_attempts.
+        """
+        async with self._sessionmaker.begin() as session:
+            task = await TaskRepository(session).transition(
+                task_id,
+                TaskStatus.PENDING,
+                manual=True,
+                max_attempts=Task.attempt + self._settings.task_max_attempts,
+                next_attempt_at=None,
+            )
+            if task is not None:
+                OutboxRepository(session).add(
+                    self._settings.kafka_topic,
+                    TaskQueuedEvent(
+                        task_id=task.id, file_id=task.file_id, attempt=task.attempt + 1
+                    ),
+                )
+        if task is None:
+            raise await self._conflict(task_id, TaskStatus.PENDING)
+        return task
 
     async def schedule_retry(
         self, task_id: uuid.UUID, attempt: int, error: str, delay_s: float

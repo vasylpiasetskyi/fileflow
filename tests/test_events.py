@@ -1,9 +1,10 @@
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from pydantic import ValidationError
 
-from app.events import TaskQueuedEvent
+from app.events import DeadLetter, DeadLetterKind, TaskQueuedEvent
 
 
 def test_event_round_trips_through_json():
@@ -35,3 +36,25 @@ def test_key_is_the_task_id_so_a_task_always_maps_to_one_partition():
 def test_invalid_messages_fail_validation(raw):
     with pytest.raises(ValidationError):
         TaskQueuedEvent.model_validate_json(raw)
+
+
+def test_dead_letter_round_trips_and_is_keyed_by_task():
+    task_id = uuid.uuid4()
+    letter = DeadLetter(
+        kind=DeadLetterKind.TASK_FAILED,
+        error="boom",
+        failed_at=datetime.now(UTC),
+        task_id=task_id,
+        attempt=5,
+    )
+
+    assert DeadLetter.model_validate_json(letter.model_dump_json()) == letter
+    assert letter.key == str(task_id).encode()
+
+
+def test_dead_letter_without_task_is_keyed_by_its_own_id():
+    letter = DeadLetter(
+        kind=DeadLetterKind.INVALID_MESSAGE, error="not json", failed_at=datetime.now(UTC)
+    )
+
+    assert letter.key == str(letter.event_id).encode()

@@ -26,6 +26,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.config import Settings
 from app.events import TaskQueuedEvent
 from app.models import File, FileStatus, Task, TaskStatus
 from app.repositories.file_repository import FileRepository
@@ -71,11 +72,11 @@ class FileService:
         self,
         sessionmaker: async_sessionmaker[AsyncSession],
         storage: Storage,
-        topic: str,
+        settings: Settings,
     ) -> None:
         self._sessionmaker = sessionmaker
         self._storage = storage
-        self._topic = topic  # where the outbox publisher will send the task's event
+        self._settings = settings
 
     async def upload(
         self, filename: str, content_type: str, chunks: AsyncIterable[bytes]
@@ -114,10 +115,16 @@ class FileService:
                 size=digest.size,
                 checksum_sha256=digest.sha256,
             )
-            task = Task(id=uuid.uuid4(), file_id=file_id, status=TaskStatus.PENDING, attempt=0)
+            task = Task(
+                id=uuid.uuid4(),
+                file_id=file_id,
+                status=TaskStatus.PENDING,
+                attempt=0,
+                max_attempts=self._settings.task_max_attempts,
+            )
             TaskRepository(session).add(task)
             OutboxRepository(session).add(
-                self._topic, TaskQueuedEvent(task_id=task.id, file_id=file_id)
+                self._settings.kafka_topic, TaskQueuedEvent(task_id=task.id, file_id=file_id)
             )
         return UploadResult(file=file, task=task)
 

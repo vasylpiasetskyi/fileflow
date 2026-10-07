@@ -5,6 +5,7 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy import select
 
+from app.config import get_settings
 from app.models import File, FileStatus, Task, TaskStatus
 from app.processing import FileStats
 from app.repositories.task_repository import TaskRepository
@@ -28,7 +29,7 @@ async def _upload(client, name: str = "doc.txt") -> dict:
 
 @pytest.fixture
 def tasks(app: FastAPI) -> TaskService:
-    return TaskService(app.state.sessionmaker)
+    return TaskService(app.state.sessionmaker, get_settings())
 
 
 async def test_upload_creates_a_pending_task_for_the_file(client):

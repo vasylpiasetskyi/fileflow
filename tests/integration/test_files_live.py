@@ -80,7 +80,7 @@ class _UnavailableStorage:
 async def test_storage_failure_returns_503_and_marks_file_failed(app: FastAPI, client):
     sessionmaker = app.state.sessionmaker
     app.dependency_overrides[get_file_service] = lambda: FileService(
-        sessionmaker, _UnavailableStorage(), get_settings().kafka_topic
+        sessionmaker, _UnavailableStorage(), get_settings()
     )
     filename = f"doomed-{uuid.uuid4()}.txt"
 

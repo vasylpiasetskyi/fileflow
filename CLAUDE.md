@@ -54,6 +54,7 @@ uv run pytest                             # unit tests
 uv run pytest -m integration              # needs running infra; uses DB fileflow_test
 uv run ruff check . && uv run ruff format .
 uv run python -m experiments.<name>       # phase experiments (experiments/)
+uv run python -m app.dlq list|redrive ID  # inspect the DLQ / redrive a FAILED task
 ```
 
 Run lint + tests after every step.

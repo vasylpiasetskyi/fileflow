@@ -19,6 +19,7 @@ class TaskOut(BaseModel):
     file_id: uuid.UUID
     status: TaskStatus
     attempt: int
+    max_attempts: int
     worker_id: str | None
     error: str | None
     created_at: datetime

@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.events import TaskQueuedEvent
+from app.events import OutboxMessage
 from app.models import OutboxEvent, OutboxStatus
 
 
@@ -14,7 +14,7 @@ class OutboxRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    def add(self, topic: str, event: TaskQueuedEvent) -> OutboxEvent:
+    def add(self, topic: str, event: OutboxMessage) -> OutboxEvent:
         row = OutboxEvent(
             id=event.event_id,
             topic=topic,

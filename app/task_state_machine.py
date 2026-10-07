@@ -21,11 +21,20 @@ TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
 }
 
 
+# Operator actions, never taken by the pipeline itself. FAILED stays terminal
+# for workers (a late event for a FAILED task is a no-op); only an explicit
+# DLQ redrive may bring it back.
+MANUAL_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
+    TaskStatus.FAILED: frozenset({TaskStatus.PENDING}),
+}
+
+
 def is_terminal(status: TaskStatus) -> bool:
-    """No transition leads out of this status: the task is done for good."""
+    """No automatic transition leads out of this status: the pipeline is done with it."""
     return not TRANSITIONS[status]
 
 
-def sources_of(new: TaskStatus) -> frozenset[TaskStatus]:
-    """All statuses from which `new` may be entered."""
-    return frozenset(src for src, targets in TRANSITIONS.items() if new in targets)
+def sources_of(new: TaskStatus, *, manual: bool = False) -> frozenset[TaskStatus]:
+    """All statuses from which `new` may be entered (including operator actions if `manual`)."""
+    tables = (TRANSITIONS, MANUAL_TRANSITIONS) if manual else (TRANSITIONS,)
+    return frozenset(src for table in tables for src, targets in table.items() if new in targets)

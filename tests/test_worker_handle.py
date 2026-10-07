@@ -1,4 +1,4 @@
-"""How the worker treats one Kafka message: commit, skip, or rewind.
+"""How the worker treats one Kafka message: commit, dead-letter, or rewind.
 
 Fakes stand in for the consumer and the service: this is about offset
 decisions, not about Kafka or PostgreSQL.
@@ -11,7 +11,8 @@ import pytest
 from aiokafka import ConsumerRecord, TopicPartition
 
 from app.config import Settings
-from app.events import TaskQueuedEvent
+from app.events import DeadLetter, DeadLetterKind, TaskQueuedEvent
+from app.kafka import PublishError
 from app.models import TaskStatus
 from app.services.processing_service import Outcome, ProcessingResult
 from app.services.task_service import UnknownTaskError
@@ -45,6 +46,17 @@ class FakeService:
         return self.outcome
 
 
+class FakePublisher:
+    def __init__(self, fail: bool = False) -> None:
+        self.fail = fail
+        self.sent: list[tuple[str, DeadLetter]] = []
+
+    async def publish(self, topic: str, key: bytes, value: bytes):
+        if self.fail:
+            raise PublishError("dlq unreachable")
+        self.sent.append((topic, DeadLetter.model_validate_json(value)))
+
+
 PROCESSED = ProcessingResult(Outcome.PROCESSED, TaskStatus.COMPLETED, 1)
 
 
@@ -68,9 +80,10 @@ def _event_bytes() -> bytes:
     return TaskQueuedEvent(task_id=uuid.uuid4(), file_id=uuid.uuid4()).model_dump_json().encode()
 
 
-async def _handle(service, value: bytes) -> FakeConsumer:
+async def _handle(service, value: bytes, publisher=None) -> FakeConsumer:
     consumer = FakeConsumer()
-    await handle(consumer, service, _record(value), SETTINGS, asyncio.Event())
+    publisher = publisher or FakePublisher()
+    await handle(consumer, service, publisher, _record(value), SETTINGS, asyncio.Event())
     return consumer
 
 
@@ -81,13 +94,25 @@ async def test_processed_message_commits_the_next_offset():
     assert consumer.seeks == []
 
 
-async def test_invalid_message_is_skipped_without_calling_the_service():
-    service = FakeService(PROCESSED)
+async def test_invalid_message_is_dead_lettered_then_committed():
+    service, publisher = FakeService(PROCESSED), FakePublisher()
 
-    consumer = await _handle(service, b"garbage")
+    consumer = await _handle(service, b"garbage", publisher)
 
     assert service.calls == 0
+    [(topic, letter)] = publisher.sent
+    assert topic == SETTINGS.kafka_dlq_topic
+    assert letter.kind is DeadLetterKind.INVALID_MESSAGE
+    assert letter.raw_value == "garbage"
+    assert letter.source == "file-processing[0]@41"
     assert consumer.commits == [{TP: 42}]
+
+
+async def test_dlq_failure_rewinds_instead_of_losing_the_message():
+    consumer = await _handle(FakeService(PROCESSED), b"garbage", FakePublisher(fail=True))
+
+    assert consumer.commits == []  # not dead-lettered -> not done with it
+    assert consumer.seeks == [(TP, 41)]
 
 
 @pytest.mark.parametrize(
@@ -107,9 +132,14 @@ async def test_harmless_duplicates_are_committed_like_processed_messages(result)
     assert consumer.seeks == []
 
 
-async def test_event_for_an_unknown_task_is_skipped():
-    consumer = await _handle(FakeService(UnknownTaskError()), _event_bytes())
+async def test_event_for_an_unknown_task_is_dead_lettered():
+    publisher = FakePublisher()
 
+    consumer = await _handle(FakeService(UnknownTaskError()), _event_bytes(), publisher)
+
+    [(_, letter)] = publisher.sent
+    assert letter.kind is DeadLetterKind.UNKNOWN_TASK
+    assert letter.task_id is not None
     assert consumer.commits == [{TP: 42}]
 
 

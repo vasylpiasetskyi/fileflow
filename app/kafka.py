@@ -32,8 +32,8 @@ async def ping(settings: Settings) -> None:
         await admin.close()
 
 
-async def require_topic(settings: Settings) -> None:
-    """Fail fast if settings.kafka_topic does not exist.
+async def require_topics(settings: Settings, *topics: str) -> None:
+    """Fail fast if any of `topics` does not exist.
 
     Without this check a typo in the topic name fails silently: a consumer
     subscribed to a missing topic just waits forever, and a producer only
@@ -45,13 +45,14 @@ async def require_topic(settings: Settings) -> None:
     )
     await admin.start()
     try:
-        topics = await admin.list_topics()
+        existing = set(await admin.list_topics())
     finally:
         await admin.close()
-    if settings.kafka_topic not in topics:
+    missing = [topic for topic in topics if topic not in existing]
+    if missing:
         raise MissingTopicError(
-            f"Kafka topic {settings.kafka_topic!r} does not exist and auto-creation is "
-            "disabled; create it (see the kafka-init service in docker-compose.yml)"
+            f"Kafka topic(s) {missing} do not exist and auto-creation is disabled; "
+            "create them (see the kafka-init service in docker-compose.yml)"
         )
 
 

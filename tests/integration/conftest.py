@@ -78,18 +78,22 @@ async def clean_tables(migrated_database) -> None:
 
 @pytest.fixture(autouse=True)
 async def kafka_topic(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[str]:
-    """A fresh single-partition topic + consumer group for this test only."""
+    """A fresh single-partition topic (+ its DLQ) and consumer group for this test only."""
     topic = f"file-processing-test-{uuid.uuid4().hex[:8]}"
+    dlq = f"{topic}-dlq"
     monkeypatch.setenv("FILEFLOW_KAFKA_TOPIC", topic)
+    monkeypatch.setenv("FILEFLOW_KAFKA_DLQ_TOPIC", dlq)
     monkeypatch.setenv("FILEFLOW_KAFKA_CONSUMER_GROUP", f"{topic}-workers")
     get_settings.cache_clear()
 
     admin = AIOKafkaAdminClient(bootstrap_servers=get_settings().kafka_bootstrap_servers)
     await admin.start()
     try:
-        await admin.create_topics([NewTopic(topic, num_partitions=1, replication_factor=1)])
+        await admin.create_topics(
+            [NewTopic(t, num_partitions=1, replication_factor=1) for t in (topic, dlq)]
+        )
         yield topic
-        await admin.delete_topics([topic])
+        await admin.delete_topics([topic, dlq])
     finally:
         await admin.close()
         get_settings.cache_clear()

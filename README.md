@@ -5,7 +5,7 @@ A learning project for distributed-systems patterns (transactional outbox,
 idempotent consumers, retries/DLQ, leases, graceful shutdown).
 The phase plan is in [docs/PLAN.md](docs/PLAN.md).
 
-> Status: Phase 08 — retries: transient failures are retried with exponential backoff + jitter.
+> Status: Phase 09 — dead letter queue: failed tasks and rejected messages land in `file-processing-dlq`; operators can redrive.
 
 ## Run (hybrid dev)
 
@@ -71,6 +71,7 @@ app/
   outbox/          outbox publisher process (python -m app.outbox)
   recovery/        recovery process: requeues due retries (python -m app.recovery)
   retry.py         retry policy: error classification + backoff (pure)
+  dlq/             operator CLI: list dead letters, redrive FAILED tasks (python -m app.dlq)
   worker/          worker process: Kafka consumer loop (python -m app.worker)
   api/
     main.py        app factory + lifespan (resource setup/teardown)
@@ -124,6 +125,28 @@ with `next_attempt_at = now() + min(max, base * factor^(n-1)) ± jitter`
 and, in one transaction, moves them to `PENDING` and writes a new
 `TaskQueuedEvent` to the outbox. No sleeping in the worker, no retry topics.
 See `experiments/phase08_retries.sh`.
+
+**Dead letter queue** (`file-processing-dlq`). Every `DeadLetter` is
+self-contained (`kind`, `task_id`, `file_id`, `attempt`, `error`, `failed_at`,
+and for rejected messages `source` + `raw_value`). Two paths, one rule — the
+decision is committed only together with its dead letter:
+- a task ending `FAILED` (permanent error or budget exhausted): the dead letter
+  is an outbox row written in the **same transaction** as `FAILED`;
+- a message the worker rejects (invalid JSON, unknown task): the worker
+  publishes the dead letter **before** committing the offset; if the DLQ is
+  unreachable it does not commit and retries.
+
+Operational recovery, after fixing the cause:
+
+```bash
+uv run python -m app.dlq list              # recent dead letters
+uv run python -m app.dlq redrive TASK_ID   # FAILED -> PENDING, +task_max_attempts budget
+```
+
+Redrive never resets `attempt` (it is the fencing token); it raises the task's
+`max_attempts`. `FAILED -> PENDING` is a manual transition: for the pipeline
+`FAILED` stays terminal. The DLQ is a log, so redriven dead letters remain.
+See `experiments/phase09_dlq.sh`.
 
 Known flaws, on purpose until later phases:
 - **Stuck tasks** (Phase 10-11): a worker killed mid-task leaves it in

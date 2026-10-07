@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     # Kafka
     kafka_bootstrap_servers: str = "localhost:9092"
     kafka_topic: str = "file-processing"
+    # Dead letters: tasks that failed for good and messages that cannot be processed.
+    kafka_dlq_topic: str = "file-processing-dlq"
     # All workers share one consumer group: Kafka splits the topic's
     # partitions between them, each partition goes to exactly one member.
     kafka_consumer_group: str = "fileflow-workers"
@@ -73,7 +75,8 @@ class Settings(BaseSettings):
     worker_crash_point: Literal["", "after_processing"] = ""
 
     # Retries (see app/retry.py)
-    # Total attempts per task, the first one included; then FAILED.
+    # Attempt budget given to a new task (and added again by a DLQ redrive);
+    # stored per task in tasks.max_attempts. Then FAILED.
     task_max_attempts: int = Field(default=5, ge=1)
     # Delay before retry n (n = attempt that failed):
     #   min(max, base * factor^(n-1)) * random(1 - jitter, 1 + jitter)

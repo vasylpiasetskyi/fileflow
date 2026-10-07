@@ -108,8 +108,11 @@ class Task(Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
     file_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("files.id"), index=True)
     status: Mapped[TaskStatus] = mapped_column(status_column(TaskStatus), index=True)
-    # Incremented on every PENDING -> PROCESSING; also the fencing token.
+    # Incremented on every PENDING -> PROCESSING; also the fencing token, so it
+    # only ever grows (a DLQ redrive extends max_attempts instead of resetting it).
     attempt: Mapped[int] = mapped_column(Integer, server_default="0")
+    # Attempt budget: a retryable failure on attempt == max_attempts is final.
+    max_attempts: Mapped[int] = mapped_column(Integer)
     # The most recent failure (kept while retrying, cleared on success).
     error: Mapped[str | None] = mapped_column(Text)
     # When a RETRY task becomes due again (database clock).

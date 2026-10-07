@@ -26,6 +26,7 @@ class TaskRepository:
         new: TaskStatus,
         *,
         expected_attempt: int | None = None,
+        manual: bool = False,
         **values: object,
     ) -> Task | None:
         """Move a task to `new` if the state machine allows it from its current status.
@@ -33,14 +34,15 @@ class TaskRepository:
         `expected_attempt` is a fencing token: when given, the change applies
         only if the task is still on that attempt, i.e. still owned by the caller who
         started it. Returns None when the task is missing, in a status from
-        which `new` cannot be entered, or on another attempt.
+        which `new` cannot be entered, or on another attempt. `manual` also
+        allows operator transitions (MANUAL_TRANSITIONS).
         """
         where = (Task.attempt == expected_attempt,) if expected_attempt is not None else ()
         return await transition_status(
             self._session,
             Task,
             task_id,
-            allowed_from=sources_of(new),
+            allowed_from=sources_of(new, manual=manual),
             new=new,
             where=where,
             **values,

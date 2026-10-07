@@ -131,8 +131,9 @@ async def test_permanent_failure_is_not_retried(app, client):
 
 async def test_retries_stop_after_max_attempts(app, client):
     event = await _upload(client)
-    always_down = FlakyStorage(app.state.storage, failures=99)
-    service = _service(app, always_down, task_max_attempts=2)
+    async with app.state.sessionmaker.begin() as session:  # this task's budget: 2 attempts
+        await session.execute(update(Task).where(Task.id == event.task_id).values(max_attempts=2))
+    service = _service(app, FlakyStorage(app.state.storage, failures=99))
 
     assert (await service.process(event)).task_status is TaskStatus.RETRY
     await _make_due(app, event.task_id)
